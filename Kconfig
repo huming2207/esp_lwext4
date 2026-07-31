@@ -134,12 +134,33 @@ menu "lwext4 configuration"
             selected ESP target and compiler safely support lwext4's unaligned
             access patterns.
 
-    config LWEXT4_USE_USER_MALLOC
-        bool "Use application-provided allocation functions"
-        default n
+    choice LWEXT4_USE_USER_MALLOC
+        prompt "Memory used for lwext4 allocations"
+        default LWEXT4_USE_INTERNAL_SRAM
         help
-            Maps to CONFIG_USE_USER_MALLOC. Enabling requires the application
-            to provide ext4_user_malloc, ext4_user_calloc, ext4_user_realloc,
-            and ext4_user_free.
+            Select the ESP-IDF heap capability used by lwext4's allocations.
+            All three modes provide the ext4_user_malloc, ext4_user_calloc,
+            ext4_user_realloc, and ext4_user_free hooks required by lwext4.
+
+        config LWEXT4_USE_INTERNAL_SRAM
+            bool "Internal SRAM"
+            help
+                Allocate lwext4 memory from byte-addressable internal SRAM.
+
+        config LWEXT4_USE_PSRAM
+            bool "PSRAM only"
+            depends on SPIRAM
+            help
+                Allocate lwext4 memory from byte-addressable PSRAM only.
+                Allocation fails if the requested block cannot be allocated
+                from PSRAM.
+
+        config LWEXT4_USE_PREFER_PSRAM
+            bool "Prefer PSRAM, then internal SRAM"
+            depends on SPIRAM
+            help
+                Try byte-addressable PSRAM first and fall back to
+                byte-addressable internal SRAM when PSRAM allocation fails.
+    endchoice
 
 endmenu
