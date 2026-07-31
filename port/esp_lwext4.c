@@ -38,6 +38,8 @@ typedef struct esp_lwext4 {
     size_t max_files;
     size_t open_files;
     size_t open_dirs;
+    uint8_t *grow_buffer;
+    size_t grow_buffer_size;
     bool read_only;
     SemaphoreHandle_t lock;
     struct esp_lwext4 *next;
@@ -52,7 +54,6 @@ typedef struct {
 } esp_lwext4_dir_t;
 
 static const char *TAG = "esp_lwext4";
-static const uint8_t s_zeroes[128] = {0};
 static esp_lwext4_t *s_contexts;
 static SemaphoreHandle_t s_contexts_lock;
 static portMUX_TYPE s_contexts_lock_guard = portMUX_INITIALIZER_UNLOCKED;
@@ -312,11 +313,17 @@ static int seek_to_current_end_locked(esp_lwext4_file_t *file)
     return ext4_fseek(&file->file, (int64_t)file_size, SEEK_SET);
 }
 
-static int resize_file_locked(esp_lwext4_file_t *file, uint64_t new_size)
+static int resize_file_locked(esp_lwext4_t *ctx, esp_lwext4_file_t *file,
+                              uint64_t new_size)
 {
     uint64_t current_size;
     uint64_t original_position;
     int result;
+
+    if (ctx == NULL || file == NULL || ctx->grow_buffer == NULL ||
+        ctx->grow_buffer_size == 0) {
+        return ENOMEM;
+    }
 
     result = current_file_size_locked(file, &current_size);
     if (result != EOK) {
@@ -335,14 +342,14 @@ static int resize_file_locked(esp_lwext4_file_t *file, uint64_t new_size)
     result = ext4_fseek(&file->file, (int64_t)current_size, SEEK_SET);
 
     while (result == EOK && current_size < new_size) {
-        size_t request = sizeof(s_zeroes);
+        size_t request = ctx->grow_buffer_size;
         size_t written = 0;
         uint64_t remaining = new_size - current_size;
 
         if (remaining < request) {
             request = (size_t)remaining;
         }
-        result = ext4_fwrite(&file->file, s_zeroes, request, &written);
+        result = ext4_fwrite(&file->file, ctx->grow_buffer, request, &written);
         if (result == EOK && written == 0) {
             result = EIO;
         }
@@ -654,7 +661,7 @@ static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size,
              * POSIX pwrite() beyond EOF creates a zero-filled gap.
              * Materialize that gap before asking lwext4 to seek there.
              */
-            result = resize_file_locked(file, (uint64_t)offset);
+            result = resize_file_locked(ctx, file, (uint64_t)offset);
         }
         if (result == EOK && !read_at_or_beyond_eof) {
             result = ext4_fseek(&file->file, offset, SEEK_SET);
@@ -1299,7 +1306,7 @@ static int vfs_lwext4_ftruncate(void *opaque, int fd, off_t length)
         give_lock(ctx->lock);
         return fail_with_errno(EBADF);
     }
-    result = resize_file_locked(file, (uint64_t)length);
+    result = resize_file_locked(ctx, file, (uint64_t)length);
     give_lock(ctx->lock);
     return result == EOK ? 0 : fail_with_errno(result);
 }
@@ -1331,7 +1338,7 @@ static int vfs_lwext4_truncate(void *opaque, const char *path, off_t length)
     file.used = true;
     result = ext4_fopen2(&file.file, full_path, O_RDWR);
     if (result == EOK) {
-        result = resize_file_locked(&file, (uint64_t)length);
+        result = resize_file_locked(ctx, &file, (uint64_t)length);
         ext4_fclose(&file.file);
     }
     give_lock(ctx->lock);
@@ -1389,6 +1396,7 @@ static void context_free(esp_lwext4_t *ctx)
     if (ctx->lock != NULL) {
         vSemaphoreDelete(ctx->lock);
     }
+    free(ctx->grow_buffer);
     free(ctx->files);
     free(ctx->mount_point);
     free(ctx->base_path);
@@ -1506,8 +1514,14 @@ esp_err_t esp_vfs_lwext4_register(const esp_vfs_lwext4_conf_t *conf)
     ctx->lock = xSemaphoreCreateMutex();
     ctx->max_files = conf->max_files;
     ctx->read_only = conf->read_only;
+    if (!ctx->read_only) {
+        ctx->grow_buffer = calloc(1, CONFIG_LWEXT4_VFS_GROW_BUFFER_SIZE);
+        ctx->grow_buffer_size = CONFIG_LWEXT4_VFS_GROW_BUFFER_SIZE;
+    }
     if (ctx->base_path == NULL || ctx->mount_point == NULL ||
-        ctx->files == NULL || ctx->lock == NULL) {
+        ctx->files == NULL || ctx->lock == NULL ||
+        (!ctx->read_only &&
+         (ctx->grow_buffer == NULL || ctx->grow_buffer_size == 0))) {
         context_free(ctx);
         return ESP_ERR_NO_MEM;
     }

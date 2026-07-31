@@ -126,6 +126,20 @@ menu "lwext4 configuration"
             Maps to CONFIG_MAX_TRUNCATE_SIZE. lwext4 splits larger truncates
             into transactions no larger than this value.
 
+    config LWEXT4_VFS_GROW_BUFFER_SIZE
+        int "VFS file-growth zero-fill buffer size (bytes)"
+        range 4096 262144
+        default 16384
+        help
+            Buffer used by the VFS adapter to materialize zero-filled ranges
+            when truncate() or pwrite() extends a file beyond its current
+            size. lwext4 commits one journal transaction per write call, so a
+            larger buffer reduces the number of transactions during growth at
+            the cost of one buffer per writable registered VFS mount. The
+            buffer is allocated once at VFS registration and freed at
+            unregistration. Multiples of the filesystem block size are
+            recommended.
+
     config LWEXT4_UNALIGNED_ACCESS
         bool "Allow native unaligned memory access"
         default n
