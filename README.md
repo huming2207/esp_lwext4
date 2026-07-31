@@ -18,9 +18,9 @@ The `lwext4/` Git submodule is third-party software and retains its upstream
 copyright and licensing. This project deliberately excludes its two
 GPL-licensed implementation files from the firmware build, as explained below.
 
-The component currently provides the build and configuration layer only. It
-does not yet provide an `esp_blockdev` adapter or an ESP VFS adapter. The
-implementation plan for the former is in
+The component provides the build and configuration layer plus an ESP-IDF VFS
+adapter for an already-mounted lwext4 filesystem. It does not yet provide an
+`esp_blockdev` adapter. The implementation plan for that adapter is in
 [`docs/esp-blockdev-porting.md`](docs/esp-blockdev-porting.md).
 
 ## Supported baseline
@@ -77,8 +77,8 @@ idf.py menuconfig
 ```
 
 Open **lwext4 configuration**. The defaults select journaled ext3, disable
-xattrs and extents, use ESP-IDF's C library definitions, and use conservative
-aligned-access code.
+xattrs and extents, allocate from internal SRAM through ESP-IDF's heap
+capability API, and use conservative aligned-access code.
 
 Build with:
 
@@ -86,12 +86,52 @@ Build with:
 idf.py build
 ```
 
+## Register an lwext4 mount with VFS
+
+Mount lwext4 first, then register the same lwext4 mount point at an ESP-IDF VFS
+prefix:
+
+```c
+#include "esp_lwext4.h"
+#include "ext4.h"
+
+ESP_ERROR_CHECK(ext4_mount("storage", "/ext/", false));
+
+const esp_vfs_lwext4_conf_t vfs_conf = {
+    .base_path = "/data",
+    .mount_point = "/ext",
+    .max_files = 8,
+    .read_only = false,
+};
+ESP_ERROR_CHECK(esp_vfs_lwext4_register(&vfs_conf));
+```
+
+Standard calls such as `open("/data/file.txt", ...)`, `fopen()`, `stat()`, and
+`opendir()` then operate on the lwext4 mount. During shutdown, close all VFS
+files and directories before unregistering and unmounting:
+
+```c
+ESP_ERROR_CHECK(esp_vfs_lwext4_unregister("/data"));
+ESP_ERROR_CHECK(ext4_umount("/ext/"));
+```
+
+The VFS adapter does not own the lwext4 mount or its block device. Its
+`read_only` setting must match the mode passed to `ext4_mount()`.
+
+### Known rename limitation
+
+The pinned lwext4 public API cannot atomically replace an existing rename
+destination. Consequently, `rename()` through this adapter returns `EEXIST`
+when the destination already exists. The adapter deliberately does not emulate
+replacement by unlinking the destination first, because a subsequent rename
+failure or power loss would destroy the original destination.
+
 ## How the external build works
 
 The component follows ESP-IDF's
 [ExternalProject fully overridden build pattern](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/build-system.html#fully-overriding-the-component-build-process):
 
-1. `idf_component_register()` creates a configuration-only component.
+1. `idf_component_register()` builds only the ESP-IDF-facing VFS adapter.
 2. `ExternalProject_Add()` configures the wrapper in `cmake/lwext4/` with the
    same ESP-IDF toolchain.
 3. The wrapper generates `generated/ext4_config.h` from Kconfig values.
@@ -143,8 +183,17 @@ header maps them to the unmodified upstream macro names:
 | `CONFIG_LWEXT4_HAVE_OWN_OFLAGS` | `CONFIG_HAVE_OWN_OFLAGS` |
 | `CONFIG_LWEXT4_MAX_TRUNCATE_SIZE` | `CONFIG_MAX_TRUNCATE_SIZE` |
 | `CONFIG_LWEXT4_UNALIGNED_ACCESS` | `CONFIG_UNALIGNED_ACCESS` |
-| `CONFIG_LWEXT4_USE_USER_MALLOC` | `CONFIG_USE_USER_MALLOC` |
+| `CONFIG_LWEXT4_USE_INTERNAL_SRAM` | `CONFIG_LWEXT4_USE_INTERNAL_SRAM` |
+| `CONFIG_LWEXT4_USE_PSRAM` | `CONFIG_LWEXT4_USE_PSRAM` |
+| `CONFIG_LWEXT4_USE_PREFER_PSRAM` | `CONFIG_LWEXT4_USE_PREFER_PSRAM` |
 | `CONFIG_LWEXT4_BIG_ENDIAN` | `CONFIG_BIG_ENDIAN` when enabled |
+
+The allocator choice always sets `CONFIG_USE_USER_MALLOC=1`; the out-of-tree
+`port/lwext4_port_esp_heap.c` implementation supplies the four `ext4_user_*`
+hooks. Internal SRAM uses `heap_caps_*()` with
+`MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, PSRAM uses the corresponding
+`MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT` capabilities, and the preferred mode
+tries PSRAM before internal SRAM.
 
 `CONFIG_USE_DEFAULT_CFG` is fixed to zero by the external build because the
 generated configuration is mandatory.
