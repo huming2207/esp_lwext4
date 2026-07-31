@@ -3,17 +3,22 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# Register a configuration-only ESP-IDF component. lwext4 itself is compiled by
-# the ExternalProject below, so ESP-IDF must not compile its sources a second
-# time.
+# The ESP-IDF-facing VFS adapter is compiled as the component library. lwext4
+# itself is compiled by the ExternalProject below and must not be listed here.
 idf_component_register(
+    SRCS
+        "port/esp_lwext4.c"
     INCLUDE_DIRS
         "lwext4/include"
+        "port"
     REQUIRES
-        esp_blockdev vfs esp_blockdev_util
+        esp_blockdev vfs esp_blockdev_util heap
 )
 
 include(ExternalProject)
+
+idf_build_get_property(LWEXT4_IDF_PATH IDF_PATH)
+idf_build_get_property(LWEXT4_IDF_CONFIG_DIR CONFIG_DIR)
 
 set(LWEXT4_SOURCE_DIR "${COMPONENT_DIR}/lwext4")
 set(LWEXT4_EXTERNAL_SOURCE_DIR "${COMPONENT_DIR}/cmake/lwext4")
@@ -42,7 +47,9 @@ lwext4_bool_to_int(LWEXT4_HAVE_OWN_ASSERT CONFIG_LWEXT4_HAVE_OWN_ASSERT)
 lwext4_bool_to_int(LWEXT4_BLOCK_DEV_ENABLE_STATS CONFIG_LWEXT4_BLOCK_DEV_ENABLE_STATS)
 lwext4_bool_to_int(LWEXT4_HAVE_OWN_OFLAGS CONFIG_LWEXT4_HAVE_OWN_OFLAGS)
 lwext4_bool_to_int(LWEXT4_UNALIGNED_ACCESS CONFIG_LWEXT4_UNALIGNED_ACCESS)
-lwext4_bool_to_int(LWEXT4_USE_USER_MALLOC CONFIG_LWEXT4_USE_USER_MALLOC)
+lwext4_bool_to_int(LWEXT4_USE_INTERNAL_SRAM CONFIG_LWEXT4_USE_INTERNAL_SRAM)
+lwext4_bool_to_int(LWEXT4_USE_PSRAM CONFIG_LWEXT4_USE_PSRAM)
+lwext4_bool_to_int(LWEXT4_USE_PREFER_PSRAM CONFIG_LWEXT4_USE_PREFER_PSRAM)
 lwext4_bool_to_int(LWEXT4_BIG_ENDIAN CONFIG_LWEXT4_BIG_ENDIAN)
 
 # ext4_config.h derives CONFIG_SUPPORTED_*, CONFIG_DIR_INDEX_ENABLE,
@@ -63,6 +70,8 @@ ExternalProject_Add(lwext4_external
         "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
         "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DIDF_TARGET=${IDF_TARGET}"
+        "-DLWEXT4_IDF_PATH=${LWEXT4_IDF_PATH}"
+        "-DLWEXT4_IDF_CONFIG_DIR=${LWEXT4_IDF_CONFIG_DIR}"
         "-DLWEXT4_SOURCE_DIR=${LWEXT4_SOURCE_DIR}"
         "-DLWEXT4_PORT_DIR=${COMPONENT_DIR}/port"
         "-DLWEXT4_EXT_FEATURE_SET_LVL=${LWEXT4_EXT_FEATURE_SET_LVL}"
@@ -82,7 +91,9 @@ ExternalProject_Add(lwext4_external
         "-DLWEXT4_HAVE_OWN_OFLAGS=${LWEXT4_HAVE_OWN_OFLAGS}"
         "-DLWEXT4_MAX_TRUNCATE_SIZE=${CONFIG_LWEXT4_MAX_TRUNCATE_SIZE}"
         "-DLWEXT4_UNALIGNED_ACCESS=${LWEXT4_UNALIGNED_ACCESS}"
-        "-DLWEXT4_USE_USER_MALLOC=${LWEXT4_USE_USER_MALLOC}"
+        "-DLWEXT4_USE_INTERNAL_SRAM=${LWEXT4_USE_INTERNAL_SRAM}"
+        "-DLWEXT4_USE_PSRAM=${LWEXT4_USE_PSRAM}"
+        "-DLWEXT4_USE_PREFER_PSRAM=${LWEXT4_USE_PREFER_PSRAM}"
         "-DLWEXT4_BIG_ENDIAN=0"
     INSTALL_COMMAND ""
     BUILD_ALWAYS TRUE
@@ -98,7 +109,8 @@ target_include_directories(lwext4_archive INTERFACE
     "${LWEXT4_EXTERNAL_BINARY_DIR}/include"
 )
 
-target_link_libraries(${COMPONENT_LIB} INTERFACE lwext4_archive)
+add_dependencies(${COMPONENT_LIB} lwext4_external)
+target_link_libraries(${COMPONENT_LIB} PUBLIC lwext4_archive)
 
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
     "${LWEXT4_EXTERNAL_BINARY_DIR}"

@@ -12,6 +12,14 @@ if(NOT IS_DIRECTORY "${LWEXT4_PORT_DIR}")
     message(FATAL_ERROR "LWEXT4_PORT_DIR does not identify the ESP-IDF port sources")
 endif()
 
+if(NOT IS_DIRECTORY "${LWEXT4_IDF_PATH}/components/heap/include")
+    message(FATAL_ERROR "LWEXT4_IDF_PATH does not identify an ESP-IDF tree with heap headers")
+endif()
+
+if(NOT IS_DIRECTORY "${LWEXT4_IDF_CONFIG_DIR}")
+    message(FATAL_ERROR "LWEXT4_IDF_CONFIG_DIR does not identify the generated ESP-IDF configuration directory")
+endif()
+
 if(LWEXT4_XATTR_ENABLE)
     message(FATAL_ERROR
         "CONFIG_LWEXT4_XATTR_ENABLE is unsupported: the GPL xattr source is intentionally excluded")
@@ -25,6 +33,12 @@ endif()
 if(LWEXT4_EXT_FEATURE_SET_LVL GREATER 3)
     message(FATAL_ERROR
         "The ext4 feature set is unsafe without the excluded extent implementation")
+endif()
+
+math(EXPR LWEXT4_USE_HEAP_MODE_COUNT
+    "${LWEXT4_USE_INTERNAL_SRAM}+${LWEXT4_USE_PSRAM}+${LWEXT4_USE_PREFER_PSRAM}")
+if(NOT LWEXT4_USE_HEAP_MODE_COUNT EQUAL 1)
+    message(FATAL_ERROR "Select exactly one ESP lwext4 heap allocation mode")
 endif()
 
 set(LWEXT4_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
@@ -59,6 +73,7 @@ set(LWEXT4_SOURCES
     "${LWEXT4_SOURCE_DIR}/src/ext4_mkfs.c"
     "${LWEXT4_SOURCE_DIR}/src/ext4_super.c"
     "${LWEXT4_SOURCE_DIR}/src/ext4_trans.c"
+    "${LWEXT4_PORT_DIR}/lwext4_port_esp_heap.c"
     "${LWEXT4_PORT_DIR}/lwext4_xattr_stub.c"
 )
 
@@ -66,6 +81,12 @@ add_library(lwext4 STATIC ${LWEXT4_SOURCES})
 target_include_directories(lwext4 PUBLIC
     "${LWEXT4_SOURCE_DIR}/include"
     "${LWEXT4_GENERATED_INCLUDE_DIR}"
+)
+target_include_directories(lwext4 PRIVATE
+    "${LWEXT4_PORT_DIR}"
+    "${LWEXT4_IDF_PATH}/components/heap/include"
+    "${LWEXT4_IDF_PATH}/components/esp_common/include"
+    "${LWEXT4_IDF_CONFIG_DIR}"
 )
 target_compile_definitions(lwext4 PRIVATE CONFIG_USE_DEFAULT_CFG=0)
 target_compile_options(lwext4 PRIVATE
