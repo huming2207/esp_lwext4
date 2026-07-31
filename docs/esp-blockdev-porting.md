@@ -1,8 +1,8 @@
 # Porting lwext4 to `esp_blockdev`
 
-This is the implementation guide for the next phase. It deliberately separates
-verified interfaces from design decisions that still require a media choice or
-measurement.
+This document records the verified interfaces, safety constraints, and design
+behind `port/lwext4_port_bdl.c`. Deployment choices that depend on the selected
+storage device remain explicit configuration inputs.
 
 ## 1. Freeze the API baseline
 
@@ -102,45 +102,47 @@ filesystem-style rewrite semantics. Treat “this handle is the output of
 `wl_get_blockdev()`” as explicit application knowledge and test overwrite
 behavior before mounting lwext4.
 
-## 3. Define an out-of-tree adapter API
+## 3. Out-of-tree adapter API
 
-Keep this code outside `lwext4/`, for example:
+The adapter remains outside the upstream `lwext4/` tree:
 
 ```text
 port/
-├── include/
-│   └── esp_lwext4_blockdev.h
-├── esp_lwext4_blockdev.c
+├── lwext4_port_bdl.h
+├── lwext4_port_bdl.c
 └── lwext4_xattr_stub.c
 ```
 
-The following is a proposed project API, not an existing Espressif API:
+This is project API, not an existing Espressif API:
 
 ```c
-typedef struct esp_lwext4_blockdev esp_lwext4_blockdev_t;
+typedef struct lwext4_port_bdl lwext4_port_bdl_t;
 
 typedef struct {
     uint32_t physical_block_size;
+    uint32_t buffer_caps;
+    uint32_t buffer_alignment;
+    bool read_only;
     bool sync_after_write;
     bool lower_device_supports_rewrite;
-} esp_lwext4_blockdev_config_t;
+} lwext4_port_bdl_config_t;
 
-esp_err_t esp_lwext4_blockdev_create(
+esp_err_t lwext4_port_bdl_create(
     esp_blockdev_handle_t lower,
-    const esp_lwext4_blockdev_config_t *config,
-    esp_lwext4_blockdev_t **out_adapter);
+    const lwext4_port_bdl_config_t *config,
+    lwext4_port_bdl_t **out_adapter);
 
-struct ext4_blockdev *esp_lwext4_blockdev_get(
-    esp_lwext4_blockdev_t *adapter);
+struct ext4_blockdev *lwext4_port_bdl_get(
+    lwext4_port_bdl_t *adapter);
 
-esp_err_t esp_lwext4_blockdev_sync(
-    esp_lwext4_blockdev_t *adapter);
+esp_err_t lwext4_port_bdl_sync(
+    lwext4_port_bdl_t *adapter);
 
-esp_err_t esp_lwext4_blockdev_destroy(
-    esp_lwext4_blockdev_t *adapter);
+esp_err_t lwext4_port_bdl_destroy(
+    lwext4_port_bdl_t *adapter);
 ```
 
-The proposed ownership rule is:
+The ownership rule is:
 
 - the adapter borrows `lower`;
 - creating the adapter never consumes or releases it;
@@ -152,7 +154,7 @@ unexpectedly destroying a caller-owned SD, WL, or partition handle.
 
 ## 4. Validate the lower BDL before allocating
 
-`esp_lwext4_blockdev_create()` should reject the device unless every applicable
+`lwext4_port_bdl_create()` rejects the device unless every applicable
 condition is proven:
 
 1. `lower`, `config`, and `out_adapter` are non-null.
@@ -168,7 +170,11 @@ condition is proven:
 9. `disk_size` is a multiple of `physical_block_size`.
 10. The device has been explicitly classified as supporting rewrites. Reject
     raw erase-before-write flash.
-11. If durability requires `sync`, `lower->ops->sync` is non-null.
+11. `buffer_caps` explicitly includes `MALLOC_CAP_8BIT` and any lower-driver
+    requirements such as DMA-capable internal memory.
+12. `buffer_alignment` is a power of two, divides `physical_block_size`, and
+    satisfies the selected lower driver and target.
+13. If durability requires `sync`, `lower->ops->sync` is non-null.
 
 For SD/eMMC, 512 bytes will commonly be the correct physical block size, but
 the adapter must use the geometry reported by the actual card and the explicit
@@ -182,13 +188,14 @@ partial-block access uses a mask based on `ph_bsize - 1`.
 The adapter needs, at minimum:
 
 ```c
-struct esp_lwext4_blockdev {
+struct lwext4_port_bdl {
     struct ext4_blockdev ext4;
     struct ext4_blockdev_iface iface;
     esp_blockdev_handle_t lower;
-    uint8_t *physical_block_buffer;
-    /* A FreeRTOS mutex or equivalent lock object. */
+    uint8_t *transfer_buffer;
+    /* A FreeRTOS recursive mutex. */
     esp_err_t last_lower_error;
+    bool read_only;
     bool sync_after_write;
 };
 ```
@@ -205,7 +212,7 @@ adapter->iface.unlock = adapter_unlock;
 adapter->iface.ph_bsize = config->physical_block_size;
 adapter->iface.ph_bcnt =
     lower->geometry.disk_size / config->physical_block_size;
-adapter->iface.ph_bbuf = adapter->physical_block_buffer;
+adapter->iface.ph_bbuf = adapter->transfer_buffer;
 adapter->iface.p_user = adapter;
 
 adapter->ext4.bdif = &adapter->iface;
@@ -213,10 +220,11 @@ adapter->ext4.part_offset = 0;
 adapter->ext4.part_size = lower->geometry.disk_size;
 ```
 
-Allocate `ph_bbuf` with `physical_block_size` bytes. Check whether the selected
-lower driver requires DMA-capable or internal memory; do not assume ordinary
-`malloc()` is accepted by every storage driver. The current SD stack and target
-combination must be tested with the intended buffer capability.
+Allocate `ph_bbuf` with `physical_block_size` bytes and the caller-supplied
+`buffer_caps` and `buffer_alignment`. The implementation uses this as a bounce
+buffer for every lower read and write. This prevents lwext4 cache placement,
+including PSRAM, from violating lower-driver DMA, alignment, or internal-memory
+requirements.
 
 ## 6. Implement read and write translation
 
@@ -235,23 +243,25 @@ byte_address = block_id * physical_block_size;
 byte_length = block_count * physical_block_size;
 ```
 
-The read call is:
+The initial implementation transfers one physical block at a time. Each read
+uses:
 
 ```c
 esp_err_t err = lower->ops->read(lower,
-                                 buffer,
-                                 byte_length,
+                                 transfer_buffer,
+                                 physical_block_size,
                                  byte_address,
-                                 byte_length);
+                                 physical_block_size);
 ```
 
-The write call is:
+It then copies that block into the lwext4 destination. Each write first copies
+one lwext4 source block into `transfer_buffer`, then uses:
 
 ```c
 esp_err_t err = lower->ops->write(lower,
-                                  buffer,
+                                  transfer_buffer,
                                   byte_address,
-                                  byte_length);
+                                  physical_block_size);
 ```
 
 Before multiplying, prove:
@@ -299,14 +309,14 @@ not reacquire or take ownership of the BDL.
 physical-interface reference counter and shared scratch buffer make concurrent
 access unsafe without serialization.
 
-There is no `sync` callback in the pinned lwext4 block-device interface. Add
-the wrapper-level `esp_lwext4_blockdev_sync()` and define it to call the lower
-BDL's `sync()`. Application durability checkpoints should perform:
+There is no `sync` callback in the pinned lwext4 block-device interface. The
+wrapper-level `lwext4_port_bdl_sync()` calls the lower BDL's `sync()`.
+Application durability checkpoints should perform:
 
 ```c
 int rc = ext4_cache_flush(mount_point);
 if (rc == EOK) {
-    ESP_ERROR_CHECK(esp_lwext4_blockdev_sync(adapter));
+    ESP_ERROR_CHECK(lwext4_port_bdl_sync(adapter));
 }
 ```
 
@@ -317,7 +327,7 @@ ext4_cache_write_back(mount_point, false);
 ext4_journal_stop(mount_point);
 ext4_umount(mount_point);          /* adapter close() syncs lower */
 ext4_device_unregister(device_name);
-esp_lwext4_blockdev_destroy(adapter);
+lwext4_port_bdl_destroy(adapter);
 lower->ops->release(lower);        /* caller-owned handle */
 ```
 
@@ -342,7 +352,7 @@ BDL until power-loss tests prove the required journal ordering.
 With an already-created adapter:
 
 ```c
-struct ext4_blockdev *bdev = esp_lwext4_blockdev_get(adapter);
+struct ext4_blockdev *bdev = lwext4_port_bdl_get(adapter);
 
 int rc = ext4_device_register(bdev, "storage");
 if (rc != EOK) {
@@ -452,17 +462,18 @@ resulting image:
 Repeat for SD/eMMC and WL separately. Passing on one provider does not prove
 the other provider's cache, erase, or ordering behavior.
 
-## 12. Decisions still required before adapter implementation
+## 12. Deployment decisions still required
 
-These cannot be derived from the current repository and should be answered
-before coding the adapter:
+These cannot be derived from the component and must be answered for each
+storage stack before creating an adapter:
 
 1. Is the first target SD/eMMC or an ESP flash partition through WL?
 2. What physical block size should the adapter require for that exact provider?
 3. Is `sync_after_write` acceptable for the first correctness build?
 4. Does the selected storage driver require DMA-capable buffers?
-5. Is the first milestone lwext4's path API only, or must it also expose an
-   ESP-IDF VFS mount?
+5. Which filesystem block size and cache size fit the target's memory and
+   workload?
 
-The build system does not depend on these choices. The adapter's validation,
-allocation, durability, and public API do.
+The build system does not depend on these choices. The adapter validates the
+choices supplied through its configuration, but hardware testing is still
+required.

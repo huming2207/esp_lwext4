@@ -3,11 +3,12 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# The ESP-IDF-facing VFS adapter is compiled as the component library. lwext4
-# itself is compiled by the ExternalProject below and must not be listed here.
+# ESP-IDF-facing adapters are compiled as the component library. lwext4 itself
+# is compiled by the ExternalProject below and must not be listed here.
 idf_component_register(
     SRCS
         "port/esp_lwext4.c"
+        "port/lwext4_port_bdl.c"
     INCLUDE_DIRS
         "lwext4/include"
         "port"

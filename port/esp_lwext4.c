@@ -52,6 +52,7 @@ typedef struct {
 } esp_lwext4_dir_t;
 
 static const char *TAG = "esp_lwext4";
+static const uint8_t s_zeroes[128] = {0};
 static esp_lwext4_t *s_contexts;
 static SemaphoreHandle_t s_contexts_lock;
 static portMUX_TYPE s_contexts_lock_guard = portMUX_INITIALIZER_UNLOCKED;
@@ -88,6 +89,8 @@ static int vfs_lwext4_truncate(void *ctx, const char *path, off_t length);
 static int vfs_lwext4_ftruncate(void *ctx, int fd, off_t length);
 static int vfs_lwext4_utime(void *ctx, const char *path,
                             const struct utimbuf *times);
+static bool path_has_dot_component(const char *path);
+static bool path_is_mount_root(const char *relative_path);
 #endif
 
 #ifdef CONFIG_VFS_SUPPORT_DIR
@@ -327,20 +330,19 @@ static int resize_file_locked(esp_lwext4_file_t *file, uint64_t new_size)
      * lwext4 cannot seek beyond EOF and its truncate implementation is
      * shrink-only. POSIX growth therefore has to materialize the new range.
      */
-    uint8_t zeroes[512] = {0};
     original_position = ext4_ftell(&file->file);
     file->file.fsize = current_size;
     result = ext4_fseek(&file->file, (int64_t)current_size, SEEK_SET);
 
     while (result == EOK && current_size < new_size) {
-        size_t request = sizeof(zeroes);
+        size_t request = sizeof(s_zeroes);
         size_t written = 0;
         uint64_t remaining = new_size - current_size;
 
         if (remaining < request) {
             request = (size_t)remaining;
         }
-        result = ext4_fwrite(&file->file, zeroes, request, &written);
+        result = ext4_fwrite(&file->file, s_zeroes, request, &written);
         if (result == EOK && written == 0) {
             result = EIO;
         }
@@ -785,6 +787,153 @@ static int two_path_operation(esp_lwext4_t *ctx, const char *first,
     return result == EOK ? 0 : fail_with_errno(result);
 }
 
+typedef struct {
+    uint32_t inode_number;
+    bool is_directory;
+} path_info_t;
+
+static int path_info_locked(const char *path, path_info_t *info)
+{
+    struct ext4_inode inode;
+    struct ext4_sblock *superblock;
+    int result;
+
+    result = ext4_raw_inode_fill(path, &info->inode_number, &inode);
+    if (result != EOK) {
+        return result;
+    }
+    result = ext4_get_sblock(path, &superblock);
+    if (result != EOK) {
+        return result;
+    }
+    info->is_directory =
+        ext4_inode_type(superblock, &inode) == EXT4_INODE_MODE_DIRECTORY;
+    return EOK;
+}
+
+static int directory_is_empty_locked(const char *path, bool *empty)
+{
+    ext4_dir directory;
+    const ext4_direntry *entry;
+    int result = ext4_dir_open(&directory, path);
+
+    if (result != EOK) {
+        return result;
+    }
+
+    *empty = true;
+    while ((entry = ext4_dir_entry_next(&directory)) != NULL) {
+        bool dot = entry->name_length == 1 && entry->name[0] == '.';
+        bool dot_dot = entry->name_length == 2 &&
+                       entry->name[0] == '.' && entry->name[1] == '.';
+        if (!dot && !dot_dot) {
+            *empty = false;
+            break;
+        }
+    }
+    return ext4_dir_close(&directory);
+}
+
+static bool path_is_strict_descendant(const char *parent, const char *child)
+{
+    while (*parent != '\0') {
+        while (*parent == '/') {
+            ++parent;
+        }
+        while (*child == '/') {
+            ++child;
+        }
+        if (*parent == '\0') {
+            break;
+        }
+
+        const char *parent_end = strchr(parent, '/');
+        const char *child_end = strchr(child, '/');
+        size_t parent_length =
+            parent_end != NULL ? (size_t)(parent_end - parent)
+                               : strlen(parent);
+        size_t child_length =
+            child_end != NULL ? (size_t)(child_end - child) : strlen(child);
+
+        if (parent_length != child_length ||
+            memcmp(parent, child, parent_length) != 0) {
+            return false;
+        }
+        parent += parent_length;
+        child += child_length;
+    }
+
+    while (*child == '/') {
+        ++child;
+    }
+    return *child != '\0';
+}
+
+static int rename_locked(const char *src, const char *dst)
+{
+    path_info_t source;
+    path_info_t destination;
+    bool destination_empty;
+    int result;
+
+    /*
+     * Preserve lwext4's single-transaction fast path when the destination
+     * does not exist. EEXIST is the only case requiring emulation.
+     */
+    result = ext4_frename(src, dst);
+    if (result != EEXIST) {
+        return result;
+    }
+
+    result = path_info_locked(src, &source);
+    if (result != EOK) {
+        return result;
+    }
+    result = path_info_locked(dst, &destination);
+    if (result != EOK) {
+        return result;
+    }
+
+    /* POSIX rename is a successful no-op when both names identify one inode. */
+    if (source.inode_number == destination.inode_number) {
+        return EOK;
+    }
+    if (source.is_directory != destination.is_directory) {
+        return source.is_directory ? ENOTDIR : EISDIR;
+    }
+
+    if (source.is_directory) {
+        /*
+         * Removing the destination before discovering a source/destination
+         * ancestry error would lose data. Dot components are rejected because
+         * the public lwext4 API does not expose canonical path resolution.
+         */
+        if (path_has_dot_component(src) || path_has_dot_component(dst) ||
+            path_is_strict_descendant(src, dst)) {
+            return EINVAL;
+        }
+        result = directory_is_empty_locked(dst, &destination_empty);
+        if (result != EOK) {
+            return result;
+        }
+        if (!destination_empty) {
+            return ENOTEMPTY;
+        }
+        result = ext4_dir_rm(dst);
+    } else {
+        result = ext4_fremove(dst);
+    }
+    if (result != EOK) {
+        return result;
+    }
+
+    /*
+     * lwext4 has no public atomic replace operation. If this second rename
+     * fails, the old destination has already been removed.
+     */
+    return ext4_frename(src, dst);
+}
+
 static int vfs_lwext4_link(void *opaque, const char *path,
                            const char *hardlink_path)
 {
@@ -829,10 +978,10 @@ static int vfs_lwext4_rename(void *opaque, const char *src, const char *dst)
     if (ctx->read_only) {
         return fail_with_errno(EROFS);
     }
-    if (strcmp(src, "/") == 0 || strcmp(dst, "/") == 0) {
+    if (path_is_mount_root(src) || path_is_mount_root(dst)) {
         return fail_with_errno(EBUSY);
     }
-    return two_path_operation(ctx, src, dst, ext4_frename);
+    return two_path_operation(ctx, src, dst, rename_locked);
 }
 
 static DIR *vfs_lwext4_opendir(void *opaque, const char *name)
@@ -1044,16 +1193,14 @@ static int vfs_lwext4_mkdir(void *opaque, const char *name, mode_t mode)
 static int vfs_lwext4_rmdir(void *opaque, const char *name)
 {
     esp_lwext4_t *ctx = opaque;
-    ext4_dir directory;
-    const ext4_direntry *entry;
     char *full_path;
-    bool empty = true;
+    bool empty;
     int result;
 
     if (ctx->read_only) {
         return fail_with_errno(EROFS);
     }
-    if (strcmp(name, "/") == 0) {
+    if (path_is_mount_root(name)) {
         return fail_with_errno(EBUSY);
     }
     full_path = make_path(ctx, name);
@@ -1065,18 +1212,8 @@ static int vfs_lwext4_rmdir(void *opaque, const char *name)
         return -1;
     }
 
-    result = ext4_dir_open(&directory, full_path);
+    result = directory_is_empty_locked(full_path, &empty);
     if (result == EOK) {
-        while ((entry = ext4_dir_entry_next(&directory)) != NULL) {
-            bool dot = entry->name_length == 1 && entry->name[0] == '.';
-            bool dot_dot = entry->name_length == 2 &&
-                           entry->name[0] == '.' && entry->name[1] == '.';
-            if (!dot && !dot_dot) {
-                empty = false;
-                break;
-            }
-        }
-        ext4_dir_close(&directory);
         result = empty ? ext4_dir_rm(full_path) : ENOTEMPTY;
     }
 
@@ -1233,6 +1370,80 @@ static void context_free(esp_lwext4_t *ctx)
     free(ctx);
 }
 
+static esp_err_t lwext4_error_to_esp(int error)
+{
+    switch (error) {
+    case EOK:
+        return ESP_OK;
+    case EINVAL:
+    case ENOTDIR:
+    case EISDIR:
+        return ESP_ERR_INVALID_ARG;
+    case ENOENT:
+        return ESP_ERR_NOT_FOUND;
+    case ENOMEM:
+        return ESP_ERR_NO_MEM;
+    case EROFS:
+        return ESP_ERR_INVALID_STATE;
+    case ENOTSUP:
+        return ESP_ERR_NOT_SUPPORTED;
+    default:
+        return ESP_FAIL;
+    }
+}
+
+static bool path_has_dot_component(const char *path)
+{
+    const char *component = path;
+
+    while (*component != '\0') {
+        while (*component == '/') {
+            ++component;
+        }
+        const char *end = component;
+        while (*end != '\0' && *end != '/') {
+            ++end;
+        }
+        size_t length = (size_t)(end - component);
+        if ((length == 1 && component[0] == '.') ||
+            (length == 2 && component[0] == '.' && component[1] == '.')) {
+            return true;
+        }
+        component = end;
+    }
+    return false;
+}
+
+static bool path_is_mount_root(const char *relative_path)
+{
+    const char *component = relative_path;
+    size_t depth = 0;
+
+    while (*component != '\0') {
+        while (*component == '/') {
+            ++component;
+        }
+        const char *end = component;
+        while (*end != '\0' && *end != '/') {
+            ++end;
+        }
+
+        size_t length = (size_t)(end - component);
+        if (length == 0 || (length == 1 && component[0] == '.')) {
+            /* No change in depth. */
+        } else if (length == 2 && component[0] == '.' &&
+                   component[1] == '.') {
+            if (depth != 0) {
+                --depth;
+            }
+        } else {
+            ++depth;
+        }
+        component = end;
+    }
+    return depth == 0;
+}
+
 esp_err_t esp_vfs_lwext4_register(const esp_vfs_lwext4_conf_t *conf)
 {
     struct ext4_mount_stats stats;
@@ -1367,4 +1578,82 @@ esp_err_t esp_vfs_lwext4_unregister(const char *base_path)
         context_free(ctx);
     }
     return error;
+}
+
+esp_err_t esp_vfs_lwext4_rmdir_recurse(const char *path)
+{
+    SemaphoreHandle_t contexts_lock;
+    esp_lwext4_t *ctx = NULL;
+    const char *relative_path = NULL;
+    size_t matched_prefix_length = 0;
+    char *lwext4_path;
+    int result;
+
+    if (path == NULL || path[0] != '/') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    contexts_lock = contexts_lock_get();
+    if (contexts_lock == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (!take_lock(contexts_lock)) {
+        return ESP_FAIL;
+    }
+
+    for (esp_lwext4_t *item = s_contexts; item != NULL; item = item->next) {
+        size_t prefix_length = strlen(item->base_path);
+        if (strncmp(path, item->base_path, prefix_length) == 0 &&
+            (path[prefix_length] == '\0' || path[prefix_length] == '/') &&
+            prefix_length > matched_prefix_length) {
+            ctx = item;
+            relative_path = path + prefix_length;
+            matched_prefix_length = prefix_length;
+        }
+    }
+    if (ctx == NULL) {
+        give_lock(contexts_lock);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (!take_lock(ctx->lock)) {
+        give_lock(contexts_lock);
+        return ESP_FAIL;
+    }
+    give_lock(contexts_lock);
+
+    if (path_is_mount_root(relative_path) ||
+        path_has_dot_component(relative_path)) {
+        give_lock(ctx->lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ctx->read_only || ctx->open_files != 0 || ctx->open_dirs != 0) {
+        give_lock(ctx->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    lwext4_path = make_path(ctx, relative_path);
+    if (lwext4_path == NULL) {
+        esp_err_t error = errno == ENOMEM ? ESP_ERR_NO_MEM
+                                          : ESP_ERR_INVALID_ARG;
+        give_lock(ctx->lock);
+        return error;
+    }
+
+    result = ext4_inode_exist(lwext4_path, EXT4_DE_DIR);
+    if (result == ENOENT) {
+        int any_type_result =
+            ext4_inode_exist(lwext4_path, EXT4_DE_UNKNOWN);
+        if (any_type_result == EOK) {
+            result = ENOTDIR;
+        } else {
+            result = any_type_result;
+        }
+    }
+    if (result == EOK) {
+        result = ext4_dir_rm(lwext4_path);
+    }
+
+    free(lwext4_path);
+    give_lock(ctx->lock);
+    return lwext4_error_to_esp(result);
 }

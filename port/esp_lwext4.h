@@ -79,6 +79,39 @@ esp_err_t esp_vfs_lwext4_register(const esp_vfs_lwext4_conf_t *conf);
  */
 esp_err_t esp_vfs_lwext4_unregister(const char *base_path);
 
+/**
+ * @brief Recursively remove a directory tree on a registered lwext4 VFS.
+ *
+ * Unlike POSIX rmdir(), this function removes all files and subdirectories
+ * below the requested directory by using lwext4's recursive ext4_dir_rm()
+ * operation.
+ *
+ * The path must be an absolute ESP-IDF VFS path below a mount registered by
+ * esp_vfs_lwext4_register(), for example "/data/cache". The function rejects
+ * paths belonging to another filesystem, the registered mount root, paths
+ * containing "." or ".." components, read-only mounts, and mounts with files
+ * or directories currently open through this VFS adapter.
+ *
+ * This function does not recognize lwext4 handles opened directly outside the
+ * VFS adapter. The application must synchronize and close such handles before
+ * recursively removing a tree.
+ *
+ * @param path Absolute path below a registered lwext4 VFS prefix.
+ *
+ * @return
+ *      - ESP_OK on success
+ *      - ESP_ERR_INVALID_ARG if path is invalid, identifies the mount root,
+ *        contains a dot component, or does not identify a directory
+ *      - ESP_ERR_NOT_SUPPORTED if path is not handled by a registered lwext4
+ *        VFS instance
+ *      - ESP_ERR_NOT_FOUND if the directory does not exist
+ *      - ESP_ERR_INVALID_STATE if the mount is read-only or has open VFS
+ *        handles
+ *      - ESP_ERR_NO_MEM if temporary state cannot be allocated
+ *      - ESP_FAIL for another lwext4 failure
+ */
+esp_err_t esp_vfs_lwext4_rmdir_recurse(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

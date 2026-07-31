@@ -18,9 +18,9 @@ The `lwext4/` Git submodule is third-party software and retains its upstream
 copyright and licensing. This project deliberately excludes its two
 GPL-licensed implementation files from the firmware build, as explained below.
 
-The component provides the build and configuration layer plus an ESP-IDF VFS
-adapter for an already-mounted lwext4 filesystem. It does not yet provide an
-`esp_blockdev` adapter. The implementation plan for that adapter is in
+The component provides the build and configuration layer, an `esp_blockdev`
+adapter, and an ESP-IDF VFS adapter. The design and storage-safety background
+for the block-device adapter is in
 [`docs/esp-blockdev-porting.md`](docs/esp-blockdev-porting.md).
 
 ## Supported baseline
@@ -86,6 +86,63 @@ Build with:
 idf.py build
 ```
 
+## Create an lwext4 block device from BDL
+
+`lwext4_port_bdl_create()` wraps a caller-owned `esp_blockdev` handle. The
+caller explicitly supplies the physical block size, transfer-buffer heap
+capabilities, read-only mode, durability policy, and confirmation that the
+selected BDL stack supports ordinary overwrites:
+
+```c
+#include "lwext4_port_bdl.h"
+
+lwext4_port_bdl_t *adapter = NULL;
+const lwext4_port_bdl_config_t bdl_config = {
+    .physical_block_size = media->geometry.read_size,
+    .buffer_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT,
+    .buffer_alignment = verified_dma_alignment,
+    .read_only = false,
+    .sync_after_write = true,
+    .lower_device_supports_rewrite = true,
+};
+
+ESP_ERROR_CHECK(lwext4_port_bdl_create(media, &bdl_config, &adapter));
+
+int rc = ext4_device_register(lwext4_port_bdl_get(adapter), "storage");
+if (rc != EOK) {
+    ESP_ERROR_CHECK(lwext4_port_bdl_destroy(adapter));
+    /* Release the caller-owned media handle here. */
+}
+```
+
+The transfer buffer is also lwext4's physical-block scratch buffer. It is
+allocated with the requested capabilities and alignment. Every lower read and
+write is bounced through it, so lwext4 caches may use PSRAM while a lower
+driver uses a DMA/internal-memory buffer. I/O is intentionally issued one
+physical block at a time in this initial correctness-focused port.
+
+For writable use, `lower_device_supports_rewrite` must be true. Do not set it
+for raw erase-before-write flash. Put a proven rewrite-capable translation
+layer, such as wear levelling, below this adapter first. The adapter cannot
+infer this solely from BDL flags because stacked devices may preserve the
+physical lower device's flags.
+
+The adapter borrows `media`; it never calls the lower handle's `release`
+operation. Shutdown order is:
+
+```c
+ESP_ERROR_CHECK(esp_vfs_lwext4_unregister("/data"));
+ESP_ERROR_CHECK(ext4_umount("/ext/"));
+ESP_ERROR_CHECK(ext4_device_unregister("storage"));
+ESP_ERROR_CHECK(lwext4_port_bdl_destroy(adapter));
+ESP_ERROR_CHECK(media->ops->release(media));
+```
+
+Call `ext4_cache_flush()` before `lwext4_port_bdl_sync()` for an explicit
+durability checkpoint. `sync_after_write` is conservative and can be expensive;
+disable it only when the selected lower device's completed writes already
+provide the ordering and durability required by lwext4's journal.
+
 ## Register an lwext4 mount with VFS
 
 Mount lwext4 first, then register the same lwext4 mount point at an ESP-IDF VFS
@@ -118,13 +175,27 @@ ESP_ERROR_CHECK(ext4_umount("/ext/"));
 The VFS adapter does not own the lwext4 mount or its block device. Its
 `read_only` setting must match the mode passed to `ext4_mount()`.
 
-### Known rename limitation
+### Rename replacement limitation
 
-The pinned lwext4 public API cannot atomically replace an existing rename
-destination. Consequently, `rename()` through this adapter returns `EEXIST`
-when the destination already exists. The adapter deliberately does not emulate
-replacement by unlinking the destination first, because a subsequent rename
-failure or power loss would destroy the original destination.
+`rename()` replaces an existing file destination or an existing empty
+directory destination, including the common log-rotation pattern. The pinned
+lwext4 public API has no atomic replace operation, however, so replacement is
+implemented as destination removal followed by the native rename. A failure or
+power loss between those operations can leave the destination absent. Renaming
+to a non-empty directory fails with `ENOTEMPTY`, and file/directory type
+mismatches are rejected.
+
+### Recursive directory removal
+
+POSIX `rmdir()` remains non-recursive. For explicitly recursive removal on a
+registered lwext4 VFS path, close all VFS handles on that mount and call:
+
+```c
+ESP_ERROR_CHECK(esp_vfs_lwext4_rmdir_recurse("/data/cache"));
+```
+
+The helper rejects paths outside a registered lwext4 VFS, the mount root,
+read-only mounts, and paths containing `.` or `..` components.
 
 ## How the external build works
 
