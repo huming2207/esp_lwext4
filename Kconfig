@@ -1,0 +1,149 @@
+menu "lwext4 configuration"
+
+    choice LWEXT4_FEATURE_SET
+        prompt "Supported on-disk feature set"
+        default LWEXT4_FEATURE_SET_EXT3
+        help
+            Select the family of on-disk feature flags accepted and created by
+            lwext4. This BSD-only port intentionally does not offer the ext4
+            feature set because its supported-feature mask includes extents,
+            whose upstream implementation is GPL-2.0-or-later.
+
+        config LWEXT4_FEATURE_SET_EXT2
+            bool "ext2"
+
+        config LWEXT4_FEATURE_SET_EXT3
+            bool "ext3 (recommended)"
+    endchoice
+
+    config LWEXT4_JOURNALING_ENABLE
+        bool "Enable journaling"
+        default y
+        help
+            Maps to lwext4 CONFIG_JOURNALING_ENABLE. Keep this enabled for the
+            journaled ext3 configuration.
+
+    # These hidden symbols are deliberately fixed off. They are retained so
+    # every externally supplied lwext4 CONFIG_* input has an explicit mapping.
+    config LWEXT4_XATTR_ENABLE
+        bool
+        default n
+        help
+            Maps to CONFIG_XATTR_ENABLE. The GPL xattr source is not built.
+
+    config LWEXT4_EXTENTS_ENABLE
+        bool
+        default n
+        help
+            Maps to CONFIG_EXTENTS_ENABLE. The GPL extent source is not built.
+
+    config LWEXT4_HAVE_OWN_ERRNO
+        bool "Use lwext4's errno constants"
+        default n
+        help
+            Maps to CONFIG_HAVE_OWN_ERRNO. When disabled, lwext4 uses the C
+            library errno definitions supplied by ESP-IDF.
+
+    config LWEXT4_DEBUG_PRINTF
+        bool "Enable lwext4 debug printf"
+        default n
+        help
+            Maps to CONFIG_DEBUG_PRINTF. Runtime output is also controlled by
+            lwext4's debug mask.
+
+    config LWEXT4_DEBUG_ASSERT
+        bool "Enable lwext4 assertions"
+        default y
+        help
+            Maps to CONFIG_DEBUG_ASSERT.
+
+    config LWEXT4_HAVE_OWN_ASSERT
+        bool "Use lwext4's spin-loop assertion implementation"
+        default n
+        depends on LWEXT4_DEBUG_ASSERT
+        help
+            Maps to CONFIG_HAVE_OWN_ASSERT. Disabled uses the standard assert
+            implementation provided by ESP-IDF/Newlib.
+
+    config LWEXT4_BLOCK_DEV_ENABLE_STATS
+        bool "Collect block-device statistics"
+        default y
+        help
+            Maps to CONFIG_BLOCK_DEV_ENABLE_STATS.
+
+    config LWEXT4_BLOCK_DEV_CACHE_SIZE
+        int "Block-cache entry count"
+        range 1 1024
+        default 8
+        help
+            Maps to CONFIG_BLOCK_DEV_CACHE_SIZE. Cache data buffers are
+            allocated dynamically; RAM use also depends on filesystem block
+            size.
+
+    config LWEXT4_EXT4_MAX_BLOCKDEV_NAME
+        int "Maximum block-device name length"
+        range 1 255
+        default 32
+        help
+            Maps to CONFIG_EXT4_MAX_BLOCKDEV_NAME.
+
+    config LWEXT4_EXT4_BLOCKDEVS_COUNT
+        int "Maximum registered block-device count"
+        range 1 32
+        default 2
+        help
+            Maps to CONFIG_EXT4_BLOCKDEVS_COUNT.
+
+    config LWEXT4_EXT4_MAX_MP_NAME
+        int "Maximum mount-point name length"
+        range 1 255
+        default 32
+        help
+            Maps to CONFIG_EXT4_MAX_MP_NAME.
+
+    config LWEXT4_EXT4_MOUNTPOINTS_COUNT
+        int "Maximum mounted-filesystem count"
+        range 1 32
+        default 2
+        help
+            Maps to CONFIG_EXT4_MOUNTPOINTS_COUNT.
+
+    config LWEXT4_HAVE_OWN_OFLAGS
+        bool "Use lwext4's file-open flag constants"
+        default n
+        help
+            Maps to CONFIG_HAVE_OWN_OFLAGS. Disabled uses Newlib's fcntl and
+            unistd definitions.
+
+    config LWEXT4_MAX_TRUNCATE_SIZE
+        int "Maximum bytes truncated per transaction"
+        range 4096 2147483647
+        default 16777216
+        help
+            Maps to CONFIG_MAX_TRUNCATE_SIZE. lwext4 splits larger truncates
+            into transactions no larger than this value.
+
+    config LWEXT4_UNALIGNED_ACCESS
+        bool "Allow native unaligned memory access"
+        default n
+        help
+            Maps to CONFIG_UNALIGNED_ACCESS. Enable only after proving that the
+            selected ESP target and compiler safely support lwext4's unaligned
+            access patterns.
+
+    config LWEXT4_USE_USER_MALLOC
+        bool "Use application-provided allocation functions"
+        default n
+        help
+            Maps to CONFIG_USE_USER_MALLOC. Enabling requires the application
+            to provide ext4_user_malloc, ext4_user_calloc, ext4_user_realloc,
+            and ext4_user_free.
+
+    config LWEXT4_BIG_ENDIAN
+        bool "Build for a big-endian CPU"
+        default n
+        help
+            Maps to CONFIG_BIG_ENDIAN. Current ESP32 targets are little-endian;
+            this exists to make the upstream input explicit.
+
+endmenu
