@@ -122,6 +122,7 @@ typedef struct {
     uint32_t physical_block_size;
     uint32_t buffer_caps;
     uint32_t buffer_alignment;
+    uint32_t transfer_buffer_blocks;
     bool read_only;
     bool sync_after_write;
     bool lower_device_supports_rewrite;
@@ -174,7 +175,9 @@ condition is proven:
     requirements such as DMA-capable internal memory.
 12. `buffer_alignment` is a power of two, divides `physical_block_size`, and
     satisfies the selected lower driver and target.
-13. If durability requires `sync`, `lower->ops->sync` is non-null.
+13. `physical_block_size * transfer_buffer_blocks` fits in `size_t`; zero
+    transfer blocks selects a one-block compatibility buffer.
+14. If durability requires `sync`, `lower->ops->sync` is non-null.
 
 For SD/eMMC, 512 bytes will commonly be the correct physical block size, but
 the adapter must use the geometry reported by the actual card and the explicit
@@ -220,11 +223,12 @@ adapter->ext4.part_offset = 0;
 adapter->ext4.part_size = lower->geometry.disk_size;
 ```
 
-Allocate `ph_bbuf` with `physical_block_size` bytes and the caller-supplied
-`buffer_caps` and `buffer_alignment`. The implementation uses this as a bounce
-buffer for every lower read and write. This prevents lwext4 cache placement,
-including PSRAM, from violating lower-driver DMA, alignment, or internal-memory
-requirements.
+Allocate `ph_bbuf` with `physical_block_size * transfer_buffer_blocks` bytes
+and the caller-supplied `buffer_caps` and `buffer_alignment`. The
+implementation uses this as a bounce buffer for every lower read and write.
+This prevents lwext4 cache placement, including PSRAM, from violating
+lower-driver DMA, alignment, or internal-memory requirements. A zero transfer
+block count selects one block for compatibility.
 
 ## 6. Implement read and write translation
 
@@ -243,25 +247,25 @@ byte_address = block_id * physical_block_size;
 byte_length = block_count * physical_block_size;
 ```
 
-The initial implementation transfers one physical block at a time. Each read
+Split a request into chunks no larger than `transfer_buffer_blocks`. Each read
 uses:
 
 ```c
 esp_err_t err = lower->ops->read(lower,
                                  transfer_buffer,
-                                 physical_block_size,
+                                 transfer_buffer_size,
                                  byte_address,
-                                 physical_block_size);
+                                 chunk_size);
 ```
 
-It then copies that block into the lwext4 destination. Each write first copies
-one lwext4 source block into `transfer_buffer`, then uses:
+It then copies that chunk into the lwext4 destination. Each write first copies
+one lwext4 source chunk into `transfer_buffer`, then uses:
 
 ```c
 esp_err_t err = lower->ops->write(lower,
                                   transfer_buffer,
                                   byte_address,
-                                  physical_block_size);
+                                  chunk_size);
 ```
 
 Before multiplying, prove:

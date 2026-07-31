@@ -604,8 +604,10 @@ static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size,
 {
     esp_lwext4_t *ctx = opaque;
     esp_lwext4_file_t *file;
+    uint64_t file_size;
     uint64_t original_position;
     size_t transferred = 0;
+    bool read_at_or_beyond_eof = false;
     int result;
     int restore_result;
 
@@ -634,14 +636,37 @@ static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size,
         give_lock(ctx->lock);
         return fail_with_errno(EOVERFLOW);
     }
-    result = ext4_fseek(&file->file, offset, SEEK_SET);
-    if (result == EOK) {
-        if (write_operation) {
-            result = ext4_fwrite(&file->file, buffer, io_size_limit(size),
-                                 &transferred);
-        } else {
-            result = ext4_fread(&file->file, buffer, io_size_limit(size),
-                                &transferred);
+
+    result = EOK;
+    if (size != 0) {
+        result = current_file_size_locked(file, &file_size);
+        if (result == EOK) {
+            /*
+             * lwext4 rejects seeks beyond EOF, whereas POSIX pread() returns
+             * zero bytes when its starting offset is at or beyond EOF.
+             */
+            read_at_or_beyond_eof =
+                !write_operation && (uint64_t)offset >= file_size;
+        }
+        if (result == EOK && write_operation &&
+            (uint64_t)offset > file_size) {
+            /*
+             * POSIX pwrite() beyond EOF creates a zero-filled gap.
+             * Materialize that gap before asking lwext4 to seek there.
+             */
+            result = resize_file_locked(file, (uint64_t)offset);
+        }
+        if (result == EOK && !read_at_or_beyond_eof) {
+            result = ext4_fseek(&file->file, offset, SEEK_SET);
+        }
+        if (result == EOK && !read_at_or_beyond_eof) {
+            if (write_operation) {
+                result = ext4_fwrite(&file->file, buffer, io_size_limit(size),
+                                     &transferred);
+            } else {
+                result = ext4_fread(&file->file, buffer, io_size_limit(size),
+                                    &transferred);
+            }
         }
     }
     restore_result = ext4_fseek(&file->file, (int64_t)original_position,

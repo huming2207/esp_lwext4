@@ -101,6 +101,7 @@ const lwext4_port_bdl_config_t bdl_config = {
     .physical_block_size = media->geometry.read_size,
     .buffer_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT,
     .buffer_alignment = verified_dma_alignment,
+    .transfer_buffer_blocks = 16,
     .read_only = false,
     .sync_after_write = true,
     .lower_device_supports_rewrite = true,
@@ -118,8 +119,9 @@ if (rc != EOK) {
 The transfer buffer is also lwext4's physical-block scratch buffer. It is
 allocated with the requested capabilities and alignment. Every lower read and
 write is bounced through it, so lwext4 caches may use PSRAM while a lower
-driver uses a DMA/internal-memory buffer. I/O is intentionally issued one
-physical block at a time in this initial correctness-focused port.
+driver uses a DMA/internal-memory buffer. Contiguous transfers are issued in
+chunks of up to `transfer_buffer_blocks`; set it to zero for single-block
+compatibility behavior.
 
 For writable use, `lower_device_supports_rewrite` must be true. Do not set it
 for raw erase-before-write flash. Put a proven rewrite-capable translation
