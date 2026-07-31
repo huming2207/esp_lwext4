@@ -10,7 +10,7 @@ idf_component_register(
     INCLUDE_DIRS
         "lwext4/include"
     REQUIRES
-        esp_blockdev
+        esp_blockdev vfs esp_blockdev_util
 )
 
 include(ExternalProject)
@@ -83,7 +83,7 @@ ExternalProject_Add(lwext4_external
         "-DLWEXT4_MAX_TRUNCATE_SIZE=${CONFIG_LWEXT4_MAX_TRUNCATE_SIZE}"
         "-DLWEXT4_UNALIGNED_ACCESS=${LWEXT4_UNALIGNED_ACCESS}"
         "-DLWEXT4_USE_USER_MALLOC=${LWEXT4_USE_USER_MALLOC}"
-        "-DLWEXT4_BIG_ENDIAN=${LWEXT4_BIG_ENDIAN}"
+        "-DLWEXT4_BIG_ENDIAN=0"
     INSTALL_COMMAND ""
     BUILD_ALWAYS TRUE
     BUILD_BYPRODUCTS "${LWEXT4_LIBRARY}"

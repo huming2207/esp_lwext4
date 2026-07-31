@@ -142,11 +142,4 @@ menu "lwext4 configuration"
             to provide ext4_user_malloc, ext4_user_calloc, ext4_user_realloc,
             and ext4_user_free.
 
-    config LWEXT4_BIG_ENDIAN
-        bool "Build for a big-endian CPU"
-        default n
-        help
-            Maps to CONFIG_BIG_ENDIAN. Current ESP32 targets are little-endian;
-            this exists to make the upstream input explicit.
-
 endmenu
