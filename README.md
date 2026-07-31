@@ -5,9 +5,57 @@ ESP-IDF component build wrapper for the vendored lwext4 submodule.
 This README, the CMake build scripts, the test code and the `port/lwext4_xattr_stub.c` 
 are vibe-coded by ChatGPT Codex. The rest of the porting code will be written by human (me).
 
-This port also focus on avoid GPL pollution, so that it's friendly for propiretary 
+This port also focus on avoid GPL pollution, so that it's friendly for proprietary 
 or source-available projects. Thus I let Codex to make a `port/lwext4_xattr_stub.c` 
 to avoid linking against `lwext4_xattr` and `lwext4_extent` GPL licensed code. 
+
+## Why need this 
+
+For a few reasons:
+
+1. LittleFS is very slow on SD card, see: https://github.com/espressif/esp-idf/tree/v6.0.2/examples/storage/perf_benchmark
+2. FatFS doesn't have native journaling, may corrupt upon accidental power failure
+3. LittleFS cannot be recognised on Linux hosts (unless using FUSE or separate userspace dump tools).
+4. Ext3/4 FS itself, and `lwext4` library are both tested on embedded devices
+
+## Benchmark result:
+
+On a ESP32-P4 Rev 1.0 (Alientek DNESP32P4M) board + Sandisk Extreme U3/A1 32GB MicroSD card, using 4-bit access, PSRAM enabled:
+
+```
+I (1544) main_task: Calling app_main()
+Name: SE32G
+Type: SDHC
+Speed: 40.00 MHz (limit: 40.00 MHz)
+Size: 30436MB
+CSD: ver=2, sector_size=512, capacity=62333952 read_bl_len=9
+SSR: bus_width=4
+I (6964) esp_lwext4: registered lwext4 mount /ext/ at /sd
+I (6964) demo_storage: Mounted ext filesystem at /sd (lwext4 mount /ext/)
+I (8364) esp_lwext4: unregistered lwext4 VFS at /sd
+I (8424) esp_lwext4: registered lwext4 mount /ext/ at /sd
+I (8424) demo_storage: Unmount/remount cycle completed
+I (9534) demo_tests: Sequential: write 10.21 MiB/s, durable write 10.21 MiB/s, read 13.71 MiB/s, verify 15.33 MiB/s (8192 KiB)
+I (9814) esp_lwext4: unregistered lwext4 VFS at /sd
+I (9824) esp_lwext4: registered lwext4 mount /ext/ at /sd
+I (9824) demo_storage: Unmount/remount cycle completed
+I (10064) demo_tests: Random 4 KiB: durable write 918.6 IOPS, verified read 1079.1 IOPS
+I (16724) esp_lwext4: unregistered lwext4 VFS at /sd
+I (17054) esp_lwext4: registered lwext4 mount /ext/ at /sd
+I (17054) demo_storage: Unmount/remount cycle completed
+I (24234) esp_lwext4: unregistered lwext4 VFS at /sd
+I (24574) esp_lwext4: registered lwext4 mount /ext/ at /sd
+I (24574) demo_storage: Unmount/remount cycle completed
+I (31114) esp_lwext4: unregistered lwext4 VFS at /sd
+I (31464) esp_lwext4: registered lwext4 mount /ext/ at /sd
+I (31464) demo_storage: Unmount/remount cycle completed
+I (39114) esp_lwext4: unregistered lwext4 VFS at /sd
+I (39484) esp_lwext4: registered lwext4 mount /ext/ at /sd
+I (39484) demo_storage: Unmount/remount cycle completed
+I (39574) demo_tests: Stress: 2000 operations passed in 29.50 s (seed=0x051a7e55)
+I (39574) lwext4_demo: All enabled tests passed; filesystem remains mounted at /sd
+I (39574) main_task: Returned from app_main()
+```
 
 ## Licence
 
@@ -27,7 +75,7 @@ for the block-device adapter is in
 
 This build was verified with:
 
-- ESP-IDF v6.0.2, target `esp32`;
+- ESP-IDF v6.0.2, target `esp32p4`;
 - lwext4 commit `58bcf89a121b72d4fb66334f1693d3b30e4cb9c5`;
 - CMake/Ninja through `idf.py`; and
 - the BSD-only ext3 configuration described in the earlier project notes.
