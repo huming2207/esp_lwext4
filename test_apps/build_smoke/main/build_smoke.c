@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 esp_lwext4 contributors
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
 #include <ext4.h>
 #include <ext4_debug.h>
 

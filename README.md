@@ -9,6 +9,15 @@ This port also focus on avoid GPL pollution, so that it's friendly for propireta
 or source-available projects. Thus I let Codex to make a `port/lwext4_xattr_stub.c` 
 to avoid linking against `lwext4_xattr` and `lwext4_extent` GPL licensed code. 
 
+## Licence
+
+The ESP-IDF port code in this repository is licensed under the
+[BSD 3-Clause License](LICENSE).
+
+The `lwext4/` Git submodule is third-party software and retains its upstream
+copyright and licensing. This project deliberately excludes its two
+GPL-licensed implementation files from the firmware build, as explained below.
+
 The component currently provides the build and configuration layer only. It
 does not yet provide an `esp_blockdev` adapter or an ESP VFS adapter. The
 implementation plan for the former is in

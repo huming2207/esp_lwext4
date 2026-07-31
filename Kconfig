@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 esp_lwext4 contributors
+# SPDX-License-Identifier: BSD-3-Clause
+
 menu "lwext4 configuration"
 
     choice LWEXT4_FEATURE_SET

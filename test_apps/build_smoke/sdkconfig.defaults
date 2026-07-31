@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 esp_lwext4 contributors
+# SPDX-License-Identifier: BSD-3-Clause
+
 CONFIG_LWEXT4_FEATURE_SET_EXT3=y
 CONFIG_LWEXT4_JOURNALING_ENABLE=y
 CONFIG_LWEXT4_XATTR_ENABLE=n
