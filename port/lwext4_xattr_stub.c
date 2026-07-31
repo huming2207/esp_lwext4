@@ -15,10 +15,7 @@
  * without compiling lwext4's GPL-licensed ext4_xattr.c. They intentionally do
  * not implement xattr parsing or storage.
  */
-const char *ext4_extract_xattr_name(const char *full_name,
-                                    size_t full_name_len,
-                                    uint8_t *name_index,
-                                    size_t *name_len,
+const char *ext4_extract_xattr_name(const char *full_name, size_t full_name_len, uint8_t *name_index, size_t *name_len,
                                     bool *found)
 {
     (void)full_name;
@@ -31,8 +28,7 @@ const char *ext4_extract_xattr_name(const char *full_name,
     return NULL;
 }
 
-const char *ext4_get_xattr_name_prefix(uint8_t name_index,
-                                       size_t *ret_prefix_len)
+const char *ext4_get_xattr_name_prefix(uint8_t name_index, size_t *ret_prefix_len)
 {
     (void)name_index;
     if (ret_prefix_len) {
@@ -41,8 +37,7 @@ const char *ext4_get_xattr_name_prefix(uint8_t name_index,
     return "";
 }
 
-int ext4_xattr_list(struct ext4_inode_ref *inode_ref,
-                    struct ext4_xattr_list_entry *list, size_t *list_len)
+int ext4_xattr_list(struct ext4_inode_ref *inode_ref, struct ext4_xattr_list_entry *list, size_t *list_len)
 {
     (void)inode_ref;
     (void)list;
@@ -50,8 +45,7 @@ int ext4_xattr_list(struct ext4_inode_ref *inode_ref,
     return ENOTSUP;
 }
 
-int ext4_xattr_get(struct ext4_inode_ref *inode_ref, uint8_t name_index,
-                   const char *name, size_t name_len, void *buf,
+int ext4_xattr_get(struct ext4_inode_ref *inode_ref, uint8_t name_index, const char *name, size_t name_len, void *buf,
                    size_t buf_size, size_t *data_size)
 {
     (void)inode_ref;
@@ -64,8 +58,7 @@ int ext4_xattr_get(struct ext4_inode_ref *inode_ref, uint8_t name_index,
     return ENOTSUP;
 }
 
-int ext4_xattr_remove(struct ext4_inode_ref *inode_ref, uint8_t name_index,
-                      const char *name, size_t name_len)
+int ext4_xattr_remove(struct ext4_inode_ref *inode_ref, uint8_t name_index, const char *name, size_t name_len)
 {
     (void)inode_ref;
     (void)name_index;
@@ -74,8 +67,7 @@ int ext4_xattr_remove(struct ext4_inode_ref *inode_ref, uint8_t name_index,
     return ENOTSUP;
 }
 
-int ext4_xattr_set(struct ext4_inode_ref *inode_ref, uint8_t name_index,
-                   const char *name, size_t name_len, const void *value,
+int ext4_xattr_set(struct ext4_inode_ref *inode_ref, uint8_t name_index, const char *name, size_t name_len, const void *value,
                    size_t value_len)
 {
     (void)inode_ref;

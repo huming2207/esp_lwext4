@@ -62,24 +62,20 @@ static int vfs_lwext4_open(void *ctx, const char *path, int flags, int mode);
 static ssize_t vfs_lwext4_write(void *ctx, int fd, const void *data, size_t size);
 static off_t vfs_lwext4_lseek(void *ctx, int fd, off_t offset, int whence);
 static ssize_t vfs_lwext4_read(void *ctx, int fd, void *dst, size_t size);
-static ssize_t vfs_lwext4_pread(void *ctx, int fd, void *dst, size_t size,
-                                off_t offset);
-static ssize_t vfs_lwext4_pwrite(void *ctx, int fd, const void *src,
-                                 size_t size, off_t offset);
+static ssize_t vfs_lwext4_pread(void *ctx, int fd, void *dst, size_t size, off_t offset);
+static ssize_t vfs_lwext4_pwrite(void *ctx, int fd, const void *src, size_t size, off_t offset);
 static int vfs_lwext4_close(void *ctx, int fd);
 static int vfs_lwext4_fstat(void *ctx, int fd, struct stat *st);
 static int vfs_lwext4_fsync(void *ctx, int fd);
 
 #ifdef CONFIG_VFS_SUPPORT_DIR
 static int vfs_lwext4_stat(void *ctx, const char *path, struct stat *st);
-static int vfs_lwext4_link(void *ctx, const char *path,
-                           const char *hardlink_path);
+static int vfs_lwext4_link(void *ctx, const char *path, const char *hardlink_path);
 static int vfs_lwext4_unlink(void *ctx, const char *path);
 static int vfs_lwext4_rename(void *ctx, const char *src, const char *dst);
 static DIR *vfs_lwext4_opendir(void *ctx, const char *name);
 static struct dirent *vfs_lwext4_readdir(void *ctx, DIR *pdir);
-static int vfs_lwext4_readdir_r(void *ctx, DIR *pdir, struct dirent *entry,
-                                struct dirent **out_dirent);
+static int vfs_lwext4_readdir_r(void *ctx, DIR *pdir, struct dirent *entry, struct dirent **out_dirent);
 static long vfs_lwext4_telldir(void *ctx, DIR *pdir);
 static void vfs_lwext4_seekdir(void *ctx, DIR *pdir, long offset);
 static int vfs_lwext4_closedir(void *ctx, DIR *pdir);
@@ -88,8 +84,7 @@ static int vfs_lwext4_rmdir(void *ctx, const char *name);
 static int vfs_lwext4_access(void *ctx, const char *path, int amode);
 static int vfs_lwext4_truncate(void *ctx, const char *path, off_t length);
 static int vfs_lwext4_ftruncate(void *ctx, int fd, off_t length);
-static int vfs_lwext4_utime(void *ctx, const char *path,
-                            const struct utimbuf *times);
+static int vfs_lwext4_utime(void *ctx, const char *path, const struct utimbuf *times);
 static bool path_has_dot_component(const char *path);
 static bool path_is_mount_root(const char *relative_path);
 #endif
@@ -270,8 +265,7 @@ static uint64_t off_t_max_value(void)
  * the same inode. Refresh the size from the inode and update both cached fields
  * while the VFS mount lock excludes other VFS writes.
  */
-static int current_file_size_locked(esp_lwext4_file_t *file,
-                                    uint64_t *file_size)
+static int current_file_size_locked(esp_lwext4_file_t *file, uint64_t *file_size)
 {
     struct ext4_inode inode;
     struct ext4_sblock *superblock;
@@ -313,15 +307,13 @@ static int seek_to_current_end_locked(esp_lwext4_file_t *file)
     return ext4_fseek(&file->file, (int64_t)file_size, SEEK_SET);
 }
 
-static int resize_file_locked(esp_lwext4_t *ctx, esp_lwext4_file_t *file,
-                              uint64_t new_size)
+static int resize_file_locked(esp_lwext4_t *ctx, esp_lwext4_file_t *file, uint64_t new_size)
 {
     uint64_t current_size;
     uint64_t original_position;
     int result;
 
-    if (ctx == NULL || file == NULL || ctx->grow_buffer == NULL ||
-        ctx->grow_buffer_size == 0) {
+    if (ctx == NULL || file == NULL || ctx->grow_buffer == NULL || ctx->grow_buffer_size == 0) {
         return ENOMEM;
     }
 
@@ -361,8 +353,7 @@ static int resize_file_locked(esp_lwext4_t *ctx, esp_lwext4_file_t *file,
      * within the old EOF, so lwext4 can represent it after successful or
      * partial growth.
      */
-    int restore_result = ext4_fseek(&file->file, (int64_t)original_position,
-                                    SEEK_SET);
+    int restore_result = ext4_fseek(&file->file, (int64_t)original_position, SEEK_SET);
     if (result == EOK && restore_result != EOK) {
         result = restore_result;
     }
@@ -421,8 +412,7 @@ static int vfs_lwext4_open(void *opaque, const char *path, int flags, int mode)
     int fd = -1;
 
     (void)mode;
-    if (ctx->read_only && ((flags & O_ACCMODE) != O_RDONLY ||
-                           (flags & (O_CREAT | O_TRUNC)) != 0)) {
+    if (ctx->read_only && ((flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC)) != 0)) {
         return fail_with_errno(EROFS);
     }
 
@@ -490,8 +480,7 @@ static int vfs_lwext4_open(void *opaque, const char *path, int flags, int mode)
     return fd;
 }
 
-static ssize_t vfs_lwext4_write(void *opaque, int fd, const void *data,
-                                size_t size)
+static ssize_t vfs_lwext4_write(void *opaque, int fd, const void *data, size_t size)
 {
     esp_lwext4_t *ctx = opaque;
     esp_lwext4_file_t *file;
@@ -606,8 +595,7 @@ static off_t vfs_lwext4_lseek(void *opaque, int fd, off_t offset, int whence)
     return result;
 }
 
-static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size,
-                             off_t offset, bool write_operation)
+static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size, off_t offset, bool write_operation)
 {
     esp_lwext4_t *ctx = opaque;
     esp_lwext4_file_t *file;
@@ -652,11 +640,9 @@ static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size,
              * lwext4 rejects seeks beyond EOF, whereas POSIX pread() returns
              * zero bytes when its starting offset is at or beyond EOF.
              */
-            read_at_or_beyond_eof =
-                !write_operation && (uint64_t)offset >= file_size;
+            read_at_or_beyond_eof = !write_operation && (uint64_t)offset >= file_size;
         }
-        if (result == EOK && write_operation &&
-            (uint64_t)offset > file_size) {
+        if (result == EOK && write_operation && (uint64_t)offset > file_size) {
             /*
              * POSIX pwrite() beyond EOF creates a zero-filled gap.
              * Materialize that gap before asking lwext4 to seek there.
@@ -668,16 +654,13 @@ static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size,
         }
         if (result == EOK && !read_at_or_beyond_eof) {
             if (write_operation) {
-                result = ext4_fwrite(&file->file, buffer, io_size_limit(size),
-                                     &transferred);
+                result = ext4_fwrite(&file->file, buffer, io_size_limit(size), &transferred);
             } else {
-                result = ext4_fread(&file->file, buffer, io_size_limit(size),
-                                    &transferred);
+                result = ext4_fread(&file->file, buffer, io_size_limit(size), &transferred);
             }
         }
     }
-    restore_result = ext4_fseek(&file->file, (int64_t)original_position,
-                                SEEK_SET);
+    restore_result = ext4_fseek(&file->file, (int64_t)original_position, SEEK_SET);
     give_lock(ctx->lock);
 
     if (result != EOK) {
@@ -689,14 +672,12 @@ static ssize_t positioned_io(void *opaque, int fd, void *buffer, size_t size,
     return (ssize_t)transferred;
 }
 
-static ssize_t vfs_lwext4_pread(void *ctx, int fd, void *dst, size_t size,
-                                off_t offset)
+static ssize_t vfs_lwext4_pread(void *ctx, int fd, void *dst, size_t size, off_t offset)
 {
     return positioned_io(ctx, fd, dst, size, offset, false);
 }
 
-static ssize_t vfs_lwext4_pwrite(void *ctx, int fd, const void *src,
-                                 size_t size, off_t offset)
+static ssize_t vfs_lwext4_pwrite(void *ctx, int fd, const void *src, size_t size, off_t offset)
 {
     return positioned_io(ctx, fd, (void *)src, size, offset, true);
 }
@@ -791,8 +772,7 @@ static int vfs_lwext4_stat(void *opaque, const char *path, struct stat *st)
     return result;
 }
 
-static int two_path_operation(esp_lwext4_t *ctx, const char *first,
-                              const char *second,
+static int two_path_operation(esp_lwext4_t *ctx, const char *first, const char *second,
                               int (*operation)(const char *, const char *))
 {
     char *first_path = make_path(ctx, first);
@@ -838,8 +818,7 @@ static int path_info_locked(const char *path, path_info_t *info)
     if (result != EOK) {
         return result;
     }
-    info->is_directory =
-        ext4_inode_type(superblock, &inode) == EXT4_INODE_MODE_DIRECTORY;
+    info->is_directory = ext4_inode_type(superblock, &inode) == EXT4_INODE_MODE_DIRECTORY;
     return EOK;
 }
 
@@ -856,8 +835,7 @@ static int directory_is_empty_locked(const char *path, bool *empty)
     *empty = true;
     while ((entry = ext4_dir_entry_next(&directory)) != NULL) {
         bool dot = entry->name_length == 1 && entry->name[0] == '.';
-        bool dot_dot = entry->name_length == 2 &&
-                       entry->name[0] == '.' && entry->name[1] == '.';
+        bool dot_dot = entry->name_length == 2 && entry->name[0] == '.' && entry->name[1] == '.';
         if (!dot && !dot_dot) {
             *empty = false;
             break;
@@ -881,14 +859,10 @@ static bool path_is_strict_descendant(const char *parent, const char *child)
 
         const char *parent_end = strchr(parent, '/');
         const char *child_end = strchr(child, '/');
-        size_t parent_length =
-            parent_end != NULL ? (size_t)(parent_end - parent)
-                               : strlen(parent);
-        size_t child_length =
-            child_end != NULL ? (size_t)(child_end - child) : strlen(child);
+        size_t parent_length = parent_end != NULL ? (size_t)(parent_end - parent) : strlen(parent);
+        size_t child_length = child_end != NULL ? (size_t)(child_end - child) : strlen(child);
 
-        if (parent_length != child_length ||
-            memcmp(parent, child, parent_length) != 0) {
+        if (parent_length != child_length || memcmp(parent, child, parent_length) != 0) {
             return false;
         }
         parent += parent_length;
@@ -940,8 +914,7 @@ static int rename_locked(const char *src, const char *dst)
          * ancestry error would lose data. Dot components are rejected because
          * the public lwext4 API does not expose canonical path resolution.
          */
-        if (path_has_dot_component(src) || path_has_dot_component(dst) ||
-            path_is_strict_descendant(src, dst)) {
+        if (path_has_dot_component(src) || path_has_dot_component(dst) || path_is_strict_descendant(src, dst)) {
             return EINVAL;
         }
         result = directory_is_empty_locked(dst, &destination_empty);
@@ -966,8 +939,7 @@ static int rename_locked(const char *src, const char *dst)
     return ext4_frename(src, dst);
 }
 
-static int vfs_lwext4_link(void *opaque, const char *path,
-                           const char *hardlink_path)
+static int vfs_lwext4_link(void *opaque, const char *path, const char *hardlink_path)
 {
     esp_lwext4_t *ctx = opaque;
     if (ctx->read_only) {
@@ -1076,16 +1048,13 @@ static unsigned char dirent_type(uint8_t inode_type)
     }
 }
 
-static int vfs_lwext4_readdir_r(void *opaque, DIR *pdir,
-                                struct dirent *entry,
-                                struct dirent **out_dirent)
+static int vfs_lwext4_readdir_r(void *opaque, DIR *pdir, struct dirent *entry, struct dirent **out_dirent)
 {
     esp_lwext4_t *ctx = opaque;
     esp_lwext4_dir_t *dir = (esp_lwext4_dir_t *)pdir;
     const ext4_direntry *source;
 
-    if (pdir == NULL || entry == NULL || out_dirent == NULL ||
-        dir->ctx != ctx) {
+    if (pdir == NULL || entry == NULL || out_dirent == NULL || dir->ctx != ctx) {
         return EINVAL;
     }
     if (!take_lock(ctx->lock)) {
@@ -1271,12 +1240,9 @@ static int vfs_lwext4_access(void *opaque, const char *path, int amode)
         return result;
     }
 
-    if (((amode & R_OK) != 0 &&
-         (st.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0) ||
-        ((amode & W_OK) != 0 &&
-         (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0) ||
-        ((amode & X_OK) != 0 &&
-         (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)) {
+    if (((amode & R_OK) != 0 && (st.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0) ||
+        ((amode & W_OK) != 0 && (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0) ||
+        ((amode & X_OK) != 0 && (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)) {
         return fail_with_errno(EACCES);
     }
     return 0;
@@ -1346,8 +1312,7 @@ static int vfs_lwext4_truncate(void *opaque, const char *path, off_t length)
     return result == EOK ? 0 : fail_with_errno(result);
 }
 
-static int vfs_lwext4_utime(void *opaque, const char *path,
-                            const struct utimbuf *times)
+static int vfs_lwext4_utime(void *opaque, const char *path, const struct utimbuf *times)
 {
     esp_lwext4_t *ctx = opaque;
     struct utimbuf now;
@@ -1363,8 +1328,7 @@ static int vfs_lwext4_utime(void *opaque, const char *path,
         now.modtime = current;
         times = &now;
     }
-    if (times->actime < 0 || times->modtime < 0 ||
-        (uint64_t)times->actime > UINT32_MAX ||
+    if (times->actime < 0 || times->modtime < 0 || (uint64_t)times->actime > UINT32_MAX ||
         (uint64_t)times->modtime > UINT32_MAX) {
         return fail_with_errno(EOVERFLOW);
     }
@@ -1438,8 +1402,7 @@ static bool path_has_dot_component(const char *path)
             ++end;
         }
         size_t length = (size_t)(end - component);
-        if ((length == 1 && component[0] == '.') ||
-            (length == 2 && component[0] == '.' && component[1] == '.')) {
+        if ((length == 1 && component[0] == '.') || (length == 2 && component[0] == '.' && component[1] == '.')) {
             return true;
         }
         component = end;
@@ -1464,8 +1427,7 @@ static bool path_is_mount_root(const char *relative_path)
         size_t length = (size_t)(end - component);
         if (length == 0 || (length == 1 && component[0] == '.')) {
             /* No change in depth. */
-        } else if (length == 2 && component[0] == '.' &&
-                   component[1] == '.') {
+        } else if (length == 2 && component[0] == '.' && component[1] == '.') {
             if (depth != 0) {
                 --depth;
             }
@@ -1485,22 +1447,17 @@ esp_err_t esp_vfs_lwext4_register(const esp_vfs_lwext4_conf_t *conf)
     int flags = ESP_VFS_FLAG_STATIC | ESP_VFS_FLAG_CONTEXT_PTR;
     esp_err_t error;
 
-    if (conf == NULL || conf->base_path == NULL ||
-        conf->mount_point == NULL || conf->max_files == 0 ||
+    if (conf == NULL || conf->base_path == NULL || conf->mount_point == NULL || conf->max_files == 0 ||
         conf->max_files > INT_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
 
     size_t base_path_length = strlen(conf->base_path);
     size_t mount_point_length = strlen(conf->mount_point);
-    if (base_path_length < 2 || base_path_length > ESP_VFS_PATH_MAX ||
-        conf->base_path[0] != '/' ||
-        conf->base_path[base_path_length - 1] == '/' ||
-        mount_point_length == 0 ||
-        mount_point_length > CONFIG_EXT4_MAX_MP_NAME ||
+    if (base_path_length < 2 || base_path_length > ESP_VFS_PATH_MAX || conf->base_path[0] != '/' ||
+        conf->base_path[base_path_length - 1] == '/' || mount_point_length == 0 || mount_point_length > CONFIG_EXT4_MAX_MP_NAME ||
         conf->mount_point[0] != '/' ||
-        (conf->mount_point[mount_point_length - 1] != '/' &&
-         mount_point_length == CONFIG_EXT4_MAX_MP_NAME)) {
+        (conf->mount_point[mount_point_length - 1] != '/' && mount_point_length == CONFIG_EXT4_MAX_MP_NAME)) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -1518,10 +1475,8 @@ esp_err_t esp_vfs_lwext4_register(const esp_vfs_lwext4_conf_t *conf)
         ctx->grow_buffer = calloc(1, CONFIG_LWEXT4_VFS_GROW_BUFFER_SIZE);
         ctx->grow_buffer_size = CONFIG_LWEXT4_VFS_GROW_BUFFER_SIZE;
     }
-    if (ctx->base_path == NULL || ctx->mount_point == NULL ||
-        ctx->files == NULL || ctx->lock == NULL ||
-        (!ctx->read_only &&
-         (ctx->grow_buffer == NULL || ctx->grow_buffer_size == 0))) {
+    if (ctx->base_path == NULL || ctx->mount_point == NULL || ctx->files == NULL || ctx->lock == NULL ||
+        (!ctx->read_only && (ctx->grow_buffer == NULL || ctx->grow_buffer_size == 0))) {
         context_free(ctx);
         return ESP_ERR_NO_MEM;
     }
@@ -1541,8 +1496,7 @@ esp_err_t esp_vfs_lwext4_register(const esp_vfs_lwext4_conf_t *conf)
         return ESP_FAIL;
     }
     for (esp_lwext4_t *item = s_contexts; item != NULL; item = item->next) {
-        if (strcmp(item->base_path, ctx->base_path) == 0 ||
-            strcmp(item->mount_point, ctx->mount_point) == 0) {
+        if (strcmp(item->base_path, ctx->base_path) == 0 || strcmp(item->mount_point, ctx->mount_point) == 0) {
             give_lock(contexts_lock);
             context_free(ctx);
             return ESP_ERR_INVALID_STATE;
@@ -1556,8 +1510,7 @@ esp_err_t esp_vfs_lwext4_register(const esp_vfs_lwext4_conf_t *conf)
     if (error == ESP_OK) {
         ctx->next = s_contexts;
         s_contexts = ctx;
-        ESP_LOGI(TAG, "registered lwext4 mount %s at %s",
-                 ctx->mount_point, ctx->base_path);
+        ESP_LOGI(TAG, "registered lwext4 mount %s at %s", ctx->mount_point, ctx->base_path);
     }
     give_lock(contexts_lock);
 
@@ -1642,8 +1595,7 @@ esp_err_t esp_vfs_lwext4_rmdir_recurse(const char *path)
 
     for (esp_lwext4_t *item = s_contexts; item != NULL; item = item->next) {
         size_t prefix_length = strlen(item->base_path);
-        if (strncmp(path, item->base_path, prefix_length) == 0 &&
-            (path[prefix_length] == '\0' || path[prefix_length] == '/') &&
+        if (strncmp(path, item->base_path, prefix_length) == 0 && (path[prefix_length] == '\0' || path[prefix_length] == '/') &&
             prefix_length > matched_prefix_length) {
             ctx = item;
             relative_path = path + prefix_length;
@@ -1660,8 +1612,7 @@ esp_err_t esp_vfs_lwext4_rmdir_recurse(const char *path)
     }
     give_lock(contexts_lock);
 
-    if (path_is_mount_root(relative_path) ||
-        path_has_dot_component(relative_path)) {
+    if (path_is_mount_root(relative_path) || path_has_dot_component(relative_path)) {
         give_lock(ctx->lock);
         return ESP_ERR_INVALID_ARG;
     }
@@ -1672,16 +1623,14 @@ esp_err_t esp_vfs_lwext4_rmdir_recurse(const char *path)
 
     lwext4_path = make_path(ctx, relative_path);
     if (lwext4_path == NULL) {
-        esp_err_t error = errno == ENOMEM ? ESP_ERR_NO_MEM
-                                          : ESP_ERR_INVALID_ARG;
+        esp_err_t error = errno == ENOMEM ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
         give_lock(ctx->lock);
         return error;
     }
 
     result = ext4_inode_exist(lwext4_path, EXT4_DE_DIR);
     if (result == ENOENT) {
-        int any_type_result =
-            ext4_inode_exist(lwext4_path, EXT4_DE_UNKNOWN);
+        int any_type_result = ext4_inode_exist(lwext4_path, EXT4_DE_UNKNOWN);
         if (any_type_result == EOK) {
             result = ENOTDIR;
         } else {
