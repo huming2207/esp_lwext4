@@ -9,6 +9,14 @@ This port also focus on avoid GPL pollution, so that it's friendly for proprieta
 or source-available projects. Thus I let Codex to make a `port/lwext4_xattr_stub.c` 
 to avoid linking against `lwext4_xattr` and `lwext4_extent` GPL licensed code. 
 
+## Project state
+
+- [x] Basic functionalities
+- [x] Tested on real device (see https://github.com/huming2207/esp_lwext4_demo)
+- [x] Pass e2fsck and dumpe2fs
+- [ ] Accidential power failure test
+- [ ] Rewrite `extent` (via LLM, follow [this MIT-licensed Rust implementation](https://github.com/yuoo655/ext4_rs/blob/refactor/src/ext4_impls/extents.rs)??)
+
 ## Why need this 
 
 For a few reasons:
