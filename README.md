@@ -136,6 +136,20 @@ idf.py build
 
 ## Create an lwext4 block device from BDL
 
+> [!WARNING]
+> ESP-IDF v6.0.2's SDMMC handle returned by `sdmmc_get_blockdev()` truncates
+> 64-bit byte addresses before converting them to sectors on 32-bit targets.
+> Cards larger than 4 GiB can therefore wrap I/O onto earlier sectors and be
+> silently corrupted. `CONFIG_LWEXT4_BLOCK_DEV_CACHE_SIZE=64` may mask the
+> observed failure by changing writeback order, but it does not make this path
+> safe. Espressif tracks the defect as
+> [esp-idf#18875](https://github.com/espressif/esp-idf/issues/18875); it is
+> fixed upstream but, at the time of writing, has not been backported to the
+> ESP-IDF v6.0 release line. Patch or bypass the affected SDMMC BDL and reformat
+> media that was written through it. See
+> [`doc/CAVEATS.md`](doc/CAVEATS.md) for the root cause, evidence, and safe
+> alternatives.
+
 `lwext4_port_bdl_create()` wraps a caller-owned `esp_blockdev` handle. The
 caller explicitly supplies the physical block size, transfer-buffer heap
 capabilities, read-only mode, durability policy, and confirmation that the
