@@ -9,11 +9,13 @@ idf_component_register(
     SRCS
         "port/esp_lwext4.c"
         "port/lwext4_port_bdl.c"
+        "port/lwext4_port_format.c"
+        "port/lwext4_port_sdmmc.c"
     INCLUDE_DIRS
         "lwext4/include"
         "port"
     REQUIRES
-        esp_blockdev vfs esp_blockdev_util heap
+        esp_blockdev vfs esp_blockdev_util heap sdmmc
 )
 
 include(ExternalProject)

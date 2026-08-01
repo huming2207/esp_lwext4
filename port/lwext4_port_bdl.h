@@ -174,6 +174,8 @@ esp_err_t lwext4_port_bdl_sync(lwext4_port_bdl_t *adapter);
  * ESP_ERR_INVALID_STATE while ext4_mount holds the device. The lower BDL is
  * synced before and after formatting. Formatting is synchronous and can take
  * a long time on large devices; supply progress to keep the scheduler alive.
+ * With CONFIG_LWEXT4_FORMAT_ROUND_TO_FULL_GROUPS enabled, devices smaller
+ * than one block group (128 MiB for 4096-byte blocks) cannot be formatted.
  *
  * @return
  *      - ESP_OK on success
@@ -201,6 +203,9 @@ esp_err_t lwext4_port_bdl_last_error(const lwext4_port_bdl_t *adapter);
  * device. If the final lower sync fails, the adapter remains allocated so the
  * caller may retry or inspect lwext4_port_bdl_last_error(). The caller must
  * unmount and unregister the lwext4 device before destroying the adapter.
+ * Complete quiescence is required: no other task may be executing an adapter
+ * operation or waiting on its lock when destroy is called, because the mutex
+ * and adapter are freed immediately after the final unlock.
  */
 esp_err_t lwext4_port_bdl_destroy(lwext4_port_bdl_t *adapter);
 

@@ -83,6 +83,26 @@ menu "lwext4 configuration"
             allocated dynamically; RAM use also depends on filesystem block
             size.
 
+    config LWEXT4_FORMAT_ROUND_TO_FULL_GROUPS
+        bool "Round formatted length down to complete block groups"
+        default y
+        help
+            The pinned lwext4 formatter records an incorrect free-block count
+            in the final partial block group's descriptor: the bitmap
+            correctly marks out-of-range blocks as used, but the descriptor is
+            computed from a full group. e2fsck therefore reports a free-block
+            count mismatch on any device whose size is not a multiple of the
+            block-group size.
+
+            When enabled, the port rounds the filesystem length down to a
+            whole number of block groups before calling ext4_mkfs(). This
+            produces metadata that e2fsck accepts, at the cost of up to one
+            block group of capacity (128 MiB for 4096-byte blocks). Disable to
+            keep the full device size, but be aware that the resulting
+            metadata is inconsistent: lwext4 runs, but Linux filesystem checks
+            report a free-block count mismatch. Treat this option as
+            diagnostic-only for production or interoperability use.
+
     config LWEXT4_EXT4_MAX_BLOCKDEV_NAME
         int "Maximum block-device name length"
         range 1 255

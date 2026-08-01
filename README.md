@@ -84,6 +84,19 @@ This build was verified with:
 does not contain the `esp_blockdev` component is not supported by the current
 component metadata.
 
+## Formatter group rounding
+
+`CONFIG_LWEXT4_FORMAT_ROUND_TO_FULL_GROUPS` (enabled by default) rounds the
+formatted filesystem length down to a whole number of block groups before
+calling `ext4_mkfs()`. The pinned lwext4 formatter writes an incorrect
+free-block count in the final partial block group's descriptor, so `e2fsck`
+reports a mismatch on devices that do not end on a group boundary. Rounding
+keeps the on-disk metadata consistent at the cost of up to one block group of
+capacity (128 MiB for 4096-byte blocks). Disable the option to keep the full
+device size, but the resulting metadata is inconsistent: lwext4 runs, while
+Linux filesystem checks report a free-block count mismatch. Disabling is
+intended for diagnostics only, not for production or interoperability use.
+
 ## Add the component to a project
 
 Place this repository under the application's `components/` directory:
