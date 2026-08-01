@@ -15,6 +15,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "ext4_errno.h"
+#include "ext4_mkfs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -32,6 +33,8 @@ struct lwext4_port_bdl {
 };
 
 static const char *TAG = "lwext4_bdl";
+
+#define LWEXT4_PORT_BDL_FORMAT_PROGRESS_INTERVAL_BLOCKS 4096U
 
 static lwext4_port_bdl_t *adapter_from_bdev(struct ext4_blockdev *bdev)
 {
@@ -377,6 +380,233 @@ esp_err_t lwext4_port_bdl_sync(lwext4_port_bdl_t *adapter)
     error = sync_lower(adapter);
     xSemaphoreGiveRecursive(adapter->lock);
     return error;
+}
+
+typedef struct lwext4_port_format_wrapper {
+    struct ext4_blockdev device;
+    struct ext4_blockdev_iface iface;
+    struct ext4_blockdev *inner;
+    uint32_t blocks_since_progress;
+    uint64_t blocks_read;
+    uint64_t blocks_written;
+    void (*progress)(void *arg, uint64_t bytes_read, uint64_t bytes_written);
+    void *progress_arg;
+} lwext4_port_format_wrapper_t;
+
+static lwext4_port_format_wrapper_t *format_wrapper_from_bdev(struct ext4_blockdev *bdev)
+{
+    if (bdev == NULL || bdev->bdif == NULL) {
+        return NULL;
+    }
+    return bdev->bdif->p_user;
+}
+
+static int format_wrapper_open(struct ext4_blockdev *bdev)
+{
+    lwext4_port_format_wrapper_t *wrapper = format_wrapper_from_bdev(bdev);
+
+    if (wrapper == NULL || wrapper->inner == NULL || wrapper->inner->bdif == NULL) {
+        return EINVAL;
+    }
+    return wrapper->inner->bdif->open(wrapper->inner);
+}
+
+static int format_wrapper_close(struct ext4_blockdev *bdev)
+{
+    lwext4_port_format_wrapper_t *wrapper = format_wrapper_from_bdev(bdev);
+
+    if (wrapper == NULL || wrapper->inner == NULL || wrapper->inner->bdif == NULL) {
+        return EINVAL;
+    }
+    return wrapper->inner->bdif->close(wrapper->inner);
+}
+
+static void format_wrapper_report(lwext4_port_format_wrapper_t *wrapper)
+{
+    wrapper->blocks_since_progress = 0;
+    wrapper->progress(wrapper->progress_arg, wrapper->blocks_read * wrapper->iface.ph_bsize,
+                      wrapper->blocks_written * wrapper->iface.ph_bsize);
+}
+
+static void format_wrapper_account(lwext4_port_format_wrapper_t *wrapper, uint32_t block_count)
+{
+    if (wrapper->progress == NULL) {
+        return;
+    }
+    if (UINT32_MAX - wrapper->blocks_since_progress < block_count) {
+        wrapper->blocks_since_progress = LWEXT4_PORT_BDL_FORMAT_PROGRESS_INTERVAL_BLOCKS;
+    } else {
+        wrapper->blocks_since_progress += block_count;
+    }
+    if (wrapper->blocks_since_progress >= LWEXT4_PORT_BDL_FORMAT_PROGRESS_INTERVAL_BLOCKS) {
+        format_wrapper_report(wrapper);
+    }
+}
+
+static int format_wrapper_read(struct ext4_blockdev *bdev, void *buffer, uint64_t block_id, uint32_t block_count)
+{
+    lwext4_port_format_wrapper_t *wrapper = format_wrapper_from_bdev(bdev);
+    int rc = EOK;
+
+    if (wrapper == NULL || wrapper->inner == NULL || wrapper->inner->bdif == NULL) {
+        return EINVAL;
+    }
+    if (wrapper->inner->bdif->lock != NULL) {
+        rc = wrapper->inner->bdif->lock(wrapper->inner);
+        if (rc != EOK) {
+            return rc;
+        }
+    }
+    rc = wrapper->inner->bdif->bread(wrapper->inner, buffer, block_id, block_count);
+    if (wrapper->inner->bdif->unlock != NULL) {
+        int unlock_rc = wrapper->inner->bdif->unlock(wrapper->inner);
+        if (rc == EOK) {
+            rc = unlock_rc;
+        }
+    }
+    if (rc == EOK) {
+        wrapper->blocks_read += block_count;
+        format_wrapper_account(wrapper, block_count);
+    }
+    return rc;
+}
+
+static int format_wrapper_write(struct ext4_blockdev *bdev, const void *buffer, uint64_t block_id, uint32_t block_count)
+{
+    lwext4_port_format_wrapper_t *wrapper = format_wrapper_from_bdev(bdev);
+    int rc = EOK;
+
+    if (wrapper == NULL || wrapper->inner == NULL || wrapper->inner->bdif == NULL) {
+        return EINVAL;
+    }
+    if (wrapper->inner->bdif->lock != NULL) {
+        rc = wrapper->inner->bdif->lock(wrapper->inner);
+        if (rc != EOK) {
+            return rc;
+        }
+    }
+    rc = wrapper->inner->bdif->bwrite(wrapper->inner, buffer, block_id, block_count);
+    if (wrapper->inner->bdif->unlock != NULL) {
+        int unlock_rc = wrapper->inner->bdif->unlock(wrapper->inner);
+        if (rc == EOK) {
+            rc = unlock_rc;
+        }
+    }
+    if (rc == EOK) {
+        wrapper->blocks_written += block_count;
+        format_wrapper_account(wrapper, block_count);
+    }
+    return rc;
+}
+
+static void format_wrapper_init(lwext4_port_format_wrapper_t *wrapper, struct ext4_blockdev *inner,
+                                void (*progress)(void *arg, uint64_t bytes_read, uint64_t bytes_written), void *progress_arg)
+{
+    memset(wrapper, 0, sizeof(*wrapper));
+    wrapper->inner = inner;
+    wrapper->progress = progress;
+    wrapper->progress_arg = progress_arg;
+    wrapper->iface.open = format_wrapper_open;
+    wrapper->iface.bread = format_wrapper_read;
+    wrapper->iface.bwrite = format_wrapper_write;
+    wrapper->iface.close = format_wrapper_close;
+    wrapper->iface.ph_bsize = inner->bdif->ph_bsize;
+    wrapper->iface.ph_bcnt = inner->bdif->ph_bcnt;
+    wrapper->iface.ph_bbuf = inner->bdif->ph_bbuf;
+    wrapper->iface.p_user = wrapper;
+    wrapper->device.bdif = &wrapper->iface;
+    wrapper->device.part_offset = inner->part_offset;
+    wrapper->device.part_size = inner->part_size;
+}
+
+static esp_err_t validate_format_args(lwext4_port_bdl_t *adapter, const lwext4_port_bdl_format_config_t *config)
+{
+    uint32_t block_size;
+
+    if (adapter == NULL || config == NULL || !valid_lower_handle(adapter)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (adapter->iface.ph_refctr != 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (adapter->read_only || adapter->lower->device_flags.read_only || adapter->lower->ops->write == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (adapter->ext4.part_size == 0 || adapter->lower->geometry.read_size == 0 || adapter->lower->geometry.write_size == 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (config->feature_set != 0 && config->feature_set != F_SET_EXT2 && config->feature_set != F_SET_EXT3) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    block_size = config->block_size != 0 ? config->block_size : 4096;
+    if (!is_power_of_two(block_size) || block_size % adapter->lower->geometry.read_size != 0 ||
+        block_size % adapter->lower->geometry.write_size != 0 || adapter->ext4.part_size % block_size != 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
+
+esp_err_t lwext4_port_bdl_format(lwext4_port_bdl_t *adapter, const lwext4_port_bdl_format_config_t *config)
+{
+    struct ext4_fs *fs;
+    struct ext4_mkfs_info info;
+    lwext4_port_format_wrapper_t wrapper;
+    uint32_t feature_set;
+    esp_err_t error;
+    int rc;
+
+    error = validate_format_args(adapter, config);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = lwext4_port_bdl_sync(adapter);
+    if (error != ESP_OK) {
+        return error;
+    }
+
+    fs = calloc(1, sizeof(*fs));
+    if (fs == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    memset(&info, 0, sizeof(info));
+    info.len = adapter->ext4.part_size;
+    info.block_size = config->block_size != 0 ? config->block_size : 4096;
+    info.inode_size = config->inode_size;
+    info.inodes = config->inodes;
+    info.journal_blocks = config->journal_blocks;
+    info.journal = config->journal;
+    info.label = config->label != NULL ? config->label : "";
+
+#if CONFIG_LWEXT4_FEATURE_SET_EXT3
+    feature_set = F_SET_EXT3;
+#else
+    feature_set = F_SET_EXT2;
+#endif
+    if (config->feature_set != 0) {
+        feature_set = config->feature_set;
+    }
+
+    ESP_LOGW(TAG, "Formatting %" PRIu64 " MiB as %s: block_size=%" PRIu32 ", inodes=%" PRIu32 ", journal_blocks=%" PRIu32,
+             adapter->ext4.part_size / (1024U * 1024U), feature_set == F_SET_EXT3 ? "ext3" : "ext2", info.block_size, info.inodes,
+             info.journal_blocks);
+
+    format_wrapper_init(&wrapper, &adapter->ext4, config->progress, config->progress_arg);
+
+    if (xSemaphoreTakeRecursive(adapter->lock, portMAX_DELAY) != pdTRUE) {
+        free(fs);
+        return ESP_FAIL;
+    }
+    rc = ext4_mkfs(fs, &wrapper.device, &info, (int)feature_set);
+    xSemaphoreGiveRecursive(adapter->lock);
+    free(fs);
+
+    if (rc != EOK) {
+        ESP_LOGE(TAG, "ext4_mkfs failed: lwext4 rc=%d", rc);
+        return ESP_FAIL;
+    }
+    return lwext4_port_bdl_sync(adapter);
 }
 
 esp_err_t lwext4_port_bdl_last_error(const lwext4_port_bdl_t *adapter)

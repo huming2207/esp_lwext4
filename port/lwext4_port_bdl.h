@@ -84,6 +84,69 @@ typedef struct {
 } lwext4_port_bdl_config_t;
 
 /**
+ * @brief Configuration for formatting an lwext4 filesystem on a BDL adapter.
+ *
+ * Zero-valued numeric fields select the lwext4 defaults: 4096-byte blocks,
+ * 256-byte inodes, and capacity-derived inode and journal sizes. The
+ * capacity-derived defaults can be very large on big devices, so supply
+ * explicit values for production use.
+ */
+typedef struct {
+    /**
+     * Filesystem block size in bytes.
+     *
+     * Must be a power of two, a multiple of the lower device's read and
+     * write sizes, and divide the device size exactly. Zero selects the
+     * lwext4 default (4096).
+     */
+    uint32_t block_size;
+
+    /** Inode size in bytes. Zero selects the lwext4 default (256). */
+    uint32_t inode_size;
+
+    /**
+     * Total inode count.
+     *
+     * Zero selects the lwext4 capacity-derived default, which can be
+     * enormous on large cards.
+     */
+    uint32_t inodes;
+
+    /**
+     * Journal size in filesystem blocks.
+     *
+     * Zero selects the lwext4 default. Ignored when journal is false.
+     */
+    uint32_t journal_blocks;
+
+    /** Create a journaled filesystem. */
+    bool journal;
+
+    /** Optional volume label. NULL selects an empty label. */
+    const char *label;
+
+    /**
+     * lwext4 feature set: F_SET_EXT2 or F_SET_EXT3.
+     *
+     * Zero derives the value from the component's LWEXT4_FEATURE_SET
+     * configuration. F_SET_EXT4 is not supported by this build.
+     */
+    uint32_t feature_set;
+
+    /**
+     * Optional formatting progress callback.
+     *
+     * Called approximately every 4096 physical blocks with the total bytes
+     * read and written so far. The callback may yield to the scheduler or
+     * report progress. May be NULL.
+     */
+    void (*progress)(void *arg, uint64_t bytes_read, uint64_t bytes_written);
+
+    /** Argument passed to progress. */
+    void *progress_arg;
+} lwext4_port_bdl_format_config_t;
+
+/**
  * @brief Create an lwext4 block-device adapter over an ESP-IDF BDL handle.
  *
  * The adapter borrows @p lower. It never releases the lower handle, which
@@ -103,6 +166,25 @@ struct ext4_blockdev *lwext4_port_bdl_get(lwext4_port_bdl_t *adapter);
  * @brief Flush the lower BDL, if it supplies a sync operation.
  */
 esp_err_t lwext4_port_bdl_sync(lwext4_port_bdl_t *adapter);
+
+/**
+ * @brief Format the device behind an adapter.
+ *
+ * The adapter must not be in use: formatting fails with
+ * ESP_ERR_INVALID_STATE while ext4_mount holds the device. The lower BDL is
+ * synced before and after formatting. Formatting is synchronous and can take
+ * a long time on large devices; supply progress to keep the scheduler alive.
+ *
+ * @return
+ *      - ESP_OK on success
+ *      - ESP_ERR_INVALID_ARG for an invalid configuration
+ *      - ESP_ERR_INVALID_STATE if the device is mounted, read-only, or the
+ *        lower device rejects writes
+ *      - ESP_ERR_INVALID_SIZE for a geometry or block-size mismatch
+ *      - ESP_ERR_NO_MEM if the temporary filesystem state cannot be allocated
+ *      - ESP_FAIL if ext4_mkfs fails
+ */
+esp_err_t lwext4_port_bdl_format(lwext4_port_bdl_t *adapter, const lwext4_port_bdl_format_config_t *config);
 
 /**
  * @brief Get the most recent result returned by a lower BDL operation.
