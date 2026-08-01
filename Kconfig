@@ -8,15 +8,18 @@ menu "lwext4 configuration"
         default LWEXT4_FEATURE_SET_EXT3
         help
             Select the family of on-disk feature flags accepted and created by
-            lwext4. This BSD-only port intentionally does not offer the ext4
-            feature set because its supported-feature mask includes extents,
-            whose upstream implementation is GPL-2.0-or-later.
+            lwext4. The ext4 feature set requires an extents implementation
+            (see "Extents implementation" below).
 
         config LWEXT4_FEATURE_SET_EXT2
             bool "ext2"
 
         config LWEXT4_FEATURE_SET_EXT3
             bool "ext3 (recommended)"
+
+        config LWEXT4_FEATURE_SET_EXT4
+            bool "ext4 (requires an extents implementation)"
+            depends on LWEXT4_EXTENTS_MIT || LWEXT4_EXTENTS_UPSTREAM
     endchoice
 
     config LWEXT4_JOURNALING_ENABLE
@@ -25,6 +28,36 @@ menu "lwext4 configuration"
         help
             Maps to lwext4 CONFIG_JOURNALING_ENABLE. Keep this enabled for the
             journaled ext3 configuration.
+
+    choice LWEXT4_EXTENTS_IMPLEMENTATION
+        prompt "Extents implementation"
+        default LWEXT4_EXTENTS_MIT
+        help
+            Extent-mapped files (the ext4 feature set) need an extent-tree
+            implementation. This component ships an experimental MIT port
+            based on ext4-rs by yuoo655, or can compile lwext4's upstream
+            GPL-2.0-or-later implementation instead. The explicit build list
+            excludes lwext4's GPL extent object in the MIT configuration.
+
+        config LWEXT4_EXTENTS_NONE
+            bool "Disabled (ext2/ext3 only)"
+
+        config LWEXT4_EXTENTS_MIT
+            bool "Experimental ext4-rs-based MIT port"
+            help
+                Writable extent-tree mutation requires journaling to be
+                enabled here and an active journal on the mounted filesystem.
+                Mutation fails with ENOTSUP otherwise. Unwritten-extent
+                conversion is not implemented. See doc/CAVEATS.md before
+                production use.
+
+        config LWEXT4_EXTENTS_UPSTREAM
+            bool "Upstream lwext4 (GPL-2.0-or-later)"
+            help
+                Compiles the GPL-licensed ext4_extent.c from the vendored
+                lwext4 tree into the firmware. The resulting binary must
+                comply with GPL-2.0-or-later.
+    endchoice
 
     # These hidden symbols are deliberately fixed off. They are retained so
     # every externally supplied lwext4 CONFIG_* input has an explicit mapping.
@@ -36,9 +69,11 @@ menu "lwext4 configuration"
 
     config LWEXT4_EXTENTS_ENABLE
         bool
+        default y if LWEXT4_EXTENTS_MIT || LWEXT4_EXTENTS_UPSTREAM
         default n
         help
-            Maps to CONFIG_EXTENTS_ENABLE. The GPL extent source is not built.
+            Maps to CONFIG_EXTENTS_ENABLE. Derived from the extents
+            implementation choice; do not set directly.
 
     config LWEXT4_HAVE_OWN_ERRNO
         bool "Use lwext4's errno constants"

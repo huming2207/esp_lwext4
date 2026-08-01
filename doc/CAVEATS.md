@@ -241,3 +241,93 @@ path:
    correct on-disk result.
 
 The vendored lwext4 tree does not need modification for this issue.
+
+## Experimental extent-tree port
+
+### Scope and successful-path coverage
+
+`port/lwext4_extent.c` is an out-of-tree implementation of lwext4's three
+extent hooks. It supports initialized-extent lookup, allocation and merging,
+root growth, non-root leaf/index splitting, suffix and finite-range removal,
+metadata checksums, and bounded on-disk metadata validation. The vendored
+lwext4 source is not modified.
+
+The following successful-path checks passed on 2026-08-02:
+
+- an ESP-IDF v6.0.2 `esp32p4` firmware build with ext4, journaling, the
+  ext4-rs-based port, and a 256-entry block cache;
+- the user's 30 GiB card completed format, sequential/random/stress tests and
+  passed a host `e2fsck -f -n`;
+- the 256 MiB `benchmark.bin` contained four extents, all represented by the
+  inode's inline extent root;
+- a host image deliberately interleaved two files to produce about 920 extents
+  per file and a depth-2 tree, then verified data, truncated one file across
+  leaf boundaries, truncated it to zero, rewrote it, and removed the other
+  depth-2 file; and
+- that host run passed ASan/UBSan and the unmounted image passed
+  `e2fsck -f -n`.
+
+These checks cover the previously failing full-root, external-leaf and
+depth-2 transitions. They do not qualify the implementation for arbitrary
+power loss, injected I/O failure, hostile-image fuzzing, or all Linux-created
+extent layouts.
+
+### Journaling is mandatory for mutation
+
+The port refuses allocation, tree splitting and extent removal unless both
+journaling support is compiled in and the mounted filesystem has an active
+lwext4 journal transaction. It returns `ENOTSUP` otherwise. A filesystem with
+the extents feature but no journal is therefore suitable only for extent reads
+through this port.
+
+This fail-closed rule is required because a tree split changes several
+metadata blocks and allocation bitmaps. It is not enough merely to select
+`CONFIG_LWEXT4_JOURNALING_ENABLE`: the on-disk filesystem must contain a
+journal, journal recovery must run when required, and `ext4_journal_start()`
+must succeed for the mount.
+
+### Remaining format and API limits
+
+- The port does not create or convert unwritten extents. Reads treat them as
+  holes; a create/write lookup into an unwritten extent returns `ENOTSUP`.
+- Normal lookup validates header bounds, node depth, checksum when present,
+  the selected entry, its adjacent ordering boundaries, and physical block
+  bounds. It intentionally does not linearly rescan every entry of every
+  external node on each data-block lookup. A full node is scanned before a
+  split redistributes all entries.
+- A four-extent `filefrag` result exercises only the 60-byte inline root. At
+  least five non-mergeable extents are needed to force the first external
+  leaf; hundreds are needed to exercise a full 4 KiB leaf and depth-2 growth.
+- The tree splitter does not rebalance under-filled siblings. `e2fsck` may
+  offer an optional tree optimization after extreme synthetic fragmentation;
+  that is not an on-disk consistency error.
+
+### Lower-I/O failure caveat in the pinned lwext4 core
+
+The pinned `lwext4` revision's `ext4_fwrite()` assigns the return value of
+`ext4_fs_put_inode_ref()` to `r` at its `Finish` label. This can overwrite an
+earlier data/allocation error before the function chooses between transaction
+abort and commit. The extent port requires a transaction and keeps its normal
+split ordering valid under a successful commit, but it cannot repair this
+caller-level error propagation without changing the vendored core.
+
+Consequently, passing successful-path and `e2fsck` tests is not evidence that
+injected SD timeouts or cache/writeback failures are safely rolled back. Before
+production use, either move to an lwext4 revision with verified error
+propagation, carry a separately reviewed upstream fix outside the vendored
+tree, or perform explicit fault-injection testing that proves the chosen
+revision aborts every failed metadata operation.
+
+### Performance impact
+
+For a contiguous or four-extent file, the new validation and journal guard are
+constant, small CPU work and the split machinery is never entered. External
+node lookup remains a binary search plus validation of the selected entry and
+its neighbours; it does not scan roughly 340 entries per level. Full-node
+validation and copying occur only when fragmentation fills a node and forces a
+split. The dominant cost for ordinary 4 KiB random writes remains lwext4's
+transaction-per-write behavior and SD latency.
+
+Repeat the target benchmark after changing the allocator, checksum feature,
+PSRAM placement, or block size. The host test's elapsed time is useful for
+regression detection but is not comparable to ESP32 SDMMC throughput.

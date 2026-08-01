@@ -397,7 +397,12 @@ static esp_err_t validate_format_args(lwext4_port_bdl_t *adapter, const lwext4_p
     if (adapter->ext4.part_size == 0 || adapter->lower->geometry.read_size == 0 || adapter->lower->geometry.write_size == 0) {
         return ESP_ERR_INVALID_SIZE;
     }
+#if CONFIG_LWEXT4_EXTENTS_ENABLE
+    if (config->feature_set != 0 && config->feature_set != F_SET_EXT2 && config->feature_set != F_SET_EXT3 &&
+        config->feature_set != F_SET_EXT4) {
+#else
     if (config->feature_set != 0 && config->feature_set != F_SET_EXT2 && config->feature_set != F_SET_EXT3) {
+#endif
         return ESP_ERR_INVALID_ARG;
     }
 

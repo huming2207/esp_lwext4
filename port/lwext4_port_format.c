@@ -224,7 +224,9 @@ esp_err_t lwext4_port_format_blockdev(struct ext4_blockdev *bdev, const lwext4_p
     }
 #endif
 
-#if CONFIG_LWEXT4_FEATURE_SET_EXT3
+#if CONFIG_LWEXT4_FEATURE_SET_EXT4
+    feature_set = F_SET_EXT4;
+#elif CONFIG_LWEXT4_FEATURE_SET_EXT3
     feature_set = F_SET_EXT3;
 #else
     feature_set = F_SET_EXT2;
@@ -234,8 +236,11 @@ esp_err_t lwext4_port_format_blockdev(struct ext4_blockdev *bdev, const lwext4_p
     }
 
     ESP_LOGW(TAG, "Formatting %" PRIu64 " MiB as %s: block_size=%" PRIu32 ", inodes=%" PRIu32 ", journal_blocks=%" PRIu32,
-             info.len / (1024U * 1024U), feature_set == F_SET_EXT3 ? "ext3" : "ext2", info.block_size, info.inodes,
-             info.journal_blocks);
+             info.len / (1024U * 1024U),
+             feature_set == F_SET_EXT4   ? "ext4"
+             : feature_set == F_SET_EXT3 ? "ext3"
+                                         : "ext2",
+             info.block_size, info.inodes, info.journal_blocks);
 
     format_wrapper_init(&wrapper, bdev, config->progress, config->progress_arg);
 

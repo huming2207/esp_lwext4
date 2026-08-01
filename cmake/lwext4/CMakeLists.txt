@@ -25,14 +25,10 @@ if(LWEXT4_XATTR_ENABLE)
         "CONFIG_LWEXT4_XATTR_ENABLE is unsupported: the GPL xattr source is intentionally excluded")
 endif()
 
-if(LWEXT4_EXTENTS_ENABLE)
+if(LWEXT4_EXT_FEATURE_SET_LVL GREATER 3 AND NOT LWEXT4_EXTENTS_ENABLE)
     message(FATAL_ERROR
-        "CONFIG_LWEXT4_EXTENTS_ENABLE is unsupported: the GPL extent source is intentionally excluded")
-endif()
-
-if(LWEXT4_EXT_FEATURE_SET_LVL GREATER 3)
-    message(FATAL_ERROR
-        "The ext4 feature set is unsafe without the excluded extent implementation")
+        "The ext4 feature set requires an extents implementation "
+        "(CONFIG_LWEXT4_EXTENTS_MIT or CONFIG_LWEXT4_EXTENTS_UPSTREAM)")
 endif()
 
 math(EXPR LWEXT4_USE_HEAP_MODE_COUNT
@@ -51,8 +47,9 @@ configure_file(
 )
 
 # This list is intentionally explicit. Do not replace it with a glob or
-# aux_source_directory(): ext4_extent.c and ext4_xattr.c are GPL-licensed and
-# form a deliberate source/binary boundary for this component.
+# aux_source_directory(): ext4_xattr.c is GPL-licensed and forms a deliberate
+# source/binary boundary for this component. The extent implementation is
+# selected by the Kconfig extents choice.
 set(LWEXT4_SOURCES
     "${LWEXT4_SOURCE_DIR}/src/ext4.c"
     "${LWEXT4_SOURCE_DIR}/src/ext4_balloc.c"
@@ -76,6 +73,9 @@ set(LWEXT4_SOURCES
     "${LWEXT4_PORT_DIR}/lwext4_port_esp_heap.c"
     "${LWEXT4_PORT_DIR}/lwext4_xattr_stub.c"
 )
+if(LWEXT4_EXTENT_SOURCE)
+    list(APPEND LWEXT4_SOURCES "${LWEXT4_EXTENT_SOURCE}")
+endif()
 
 add_library(lwext4 STATIC ${LWEXT4_SOURCES})
 target_include_directories(lwext4 PUBLIC

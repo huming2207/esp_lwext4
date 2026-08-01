@@ -329,7 +329,12 @@ static esp_err_t validate_format_args(lwext4_port_sdmmc_t *adapter, const lwext4
     if (adapter->iface.ph_refctr != 0) {
         return ESP_ERR_INVALID_STATE;
     }
+#if CONFIG_LWEXT4_EXTENTS_ENABLE
+    if (config->feature_set != 0 && config->feature_set != F_SET_EXT2 && config->feature_set != F_SET_EXT3 &&
+        config->feature_set != F_SET_EXT4) {
+#else
     if (config->feature_set != 0 && config->feature_set != F_SET_EXT2 && config->feature_set != F_SET_EXT3) {
+#endif
         return ESP_ERR_INVALID_ARG;
     }
 

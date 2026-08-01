@@ -5,17 +5,18 @@ ESP-IDF component build wrapper for the vendored lwext4 submodule.
 This README, the CMake build scripts, the test code and the `port/lwext4_xattr_stub.c` 
 are vibe-coded by ChatGPT Codex. The rest of the porting code will be written by human (me).
 
-This port also focus on avoid GPL pollution, so that it's friendly for proprietary 
-or source-available projects. Thus I let Codex to make a `port/lwext4_xattr_stub.c` 
-to avoid linking against `lwext4_xattr` and `lwext4_extent` GPL licensed code. 
+The build keeps the vendored GPL extent and xattr implementation files behind
+an explicit source-selection boundary. The default port supplies an xattr stub
+and an experimental extent implementation based on the MIT-licensed
+[ext4-rs project by yuoo655](https://github.com/yuoo655/ext4_rs).
 
 ## Project state
 
 - [x] Basic functionalities
 - [x] Tested on real device (see https://github.com/huming2207/esp_lwext4_demo)
 - [x] Pass e2fsck and dumpe2fs
-- [ ] Accidential power failure test
-- [ ] Rewrite `extent` (via LLM, follow [this MIT-licensed Rust implementation](https://github.com/yuoo655/ext4_rs/blob/refactor/src/ext4_impls/extents.rs)??)
+- [x] Experimental extent implementation based on [ext4-rs](https://github.com/yuoo655/ext4_rs)
+- [ ] Accidental power-failure test
 
 ## Why need this 
 
@@ -69,10 +70,13 @@ I (39574) main_task: Returned from app_main()
 
 The ESP-IDF port code in this repository is licensed under the
 [BSD 3-Clause License](LICENSE).
+Third-party notices used by the out-of-tree port are collected in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The `lwext4/` Git submodule is third-party software and retains its upstream
-copyright and licensing. This project deliberately excludes its two
-GPL-licensed implementation files from the firmware build, as explained below.
+copyright and licensing. The normal ext4-rs-based configuration excludes the
+two GPL-licensed implementation files from the firmware build; the explicitly
+selectable upstream extent configuration does not, as explained below.
 
 The component provides the build and configuration layer, an `esp_blockdev`
 adapter, and an ESP-IDF VFS adapter. The design and storage-safety background
@@ -104,6 +108,23 @@ capacity (128 MiB for 4096-byte blocks). Disable the option to keep the full
 device size, but the resulting metadata is inconsistent: lwext4 runs, while
 Linux filesystem checks report a free-block count mismatch. Disabling is
 intended for diagnostics only, not for production or interoperability use.
+
+## Experimental extent implementation
+
+`CONFIG_LWEXT4_EXTENTS_MIT` supplies the three extent hooks expected by the
+unchanged lwext4 core. Writable extent allocation, splitting, and removal are
+accepted only while an lwext4 journal transaction is active; a filesystem
+without an active journal receives `ENOTSUP` rather than an unsafe
+best-effort mutation. Reading initialized extents is supported. Unwritten
+extents read as holes, but writing/converting them is not implemented.
+
+The common 256 MiB benchmark file was observed as four inline extents, so it
+does not exercise an external leaf. A separate host regression test forced
+about 920 non-mergeable extents per file, reached a depth-2 tree, verified
+data, truncated across leaf boundaries, truncated to zero and rewrote, then
+unlinked a depth-2 file. ASan/UBSan reported no error and `e2fsck -f -n`
+passed after unmount. This is useful coverage, not a production or power-loss
+qualification. See [CAVEATS.md](doc/CAVEATS.md) for the remaining limits.
 
 ## Add the component to a project
 
@@ -302,13 +323,24 @@ The source list must remain explicit. Do not replace it with a glob or
 
 ## Licence and feature boundary
 
-The upstream submodule is not modified. Its GPL-licensed `ext4_extent.c` and
-`ext4_xattr.c` are not compiled, archived, or linked.
+The upstream submodule is not modified. Its GPL-licensed `ext4_xattr.c` is not
+compiled, archived, or linked.
 
-`CONFIG_LWEXT4_EXTENTS_ENABLE` and `CONFIG_LWEXT4_XATTR_ENABLE` exist as hidden,
-fixed-off Kconfig symbols so their upstream inputs are explicit. The external
-build also fails if either value is forced on. The ext4 feature-set choice is
-not exposed because its supported-feature mask includes extents.
+Extents support is selectable in menuconfig under **Extents implementation**:
+
+- **Disabled** keeps the build free of extent code and limits the feature set
+  to ext2/ext3.
+- **MIT port** (default) compiles `port/lwext4_extent.c`, an MIT-licensed
+  extent-tree implementation based on
+  [ext4-rs by yuoo655](https://github.com/yuoo655/ext4_rs). The archive does
+  not contain lwext4's GPL extent object.
+- **Upstream lwext4** compiles the vendored GPL-2.0-or-later
+  `ext4_extent.c`; the resulting binary must comply with GPL-2.0-or-later.
+
+The ext4 on-disk feature set is only offered when an extents implementation is
+selected. `CONFIG_LWEXT4_XATTR_ENABLE` remains a hidden, fixed-off symbol.
+The external build fails if the ext4 feature set is selected without an
+extents implementation.
 
 The out-of-tree `port/lwext4_xattr_stub.c` resolves symbols that `ext4.c`
 references even when xattrs are disabled. It implements no xattr storage.
