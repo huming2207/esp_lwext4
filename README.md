@@ -16,6 +16,7 @@ and an experimental extent implementation based on the MIT-licensed
 - [x] Tested on real device (see https://github.com/huming2207/esp_lwext4_demo)
 - [x] Pass e2fsck and dumpe2fs
 - [x] Experimental extent implementation based on [ext4-rs](https://github.com/yuoo655/ext4_rs)
+- [x] Real-card depth-2 extent creation, remount, data verification and e2fsck
 - [ ] Accidental power-failure test
 
 ## Why need this 
@@ -90,7 +91,8 @@ This build was verified with:
 - ESP-IDF v6.0.2, target `esp32p4`;
 - lwext4 commit `58bcf89a121b72d4fb66334f1693d3b30e4cb9c5`;
 - CMake/Ninja through `idf.py`; and
-- the BSD-only ext3 configuration described in the earlier project notes.
+- the direct SDMMC adapter with journaled ext3 and experimental ext4
+  configurations described below.
 
 `esp_blockdev` is present in this ESP-IDF baseline. An older ESP-IDF tree that
 does not contain the `esp_blockdev` component is not supported by the current
@@ -123,7 +125,21 @@ does not exercise an external leaf. A separate host regression test forced
 about 920 non-mergeable extents per file, reached a depth-2 tree, verified
 data, truncated across leaf boundaries, truncated to zero and rewrote, then
 unlinked a depth-2 file. ASan/UBSan reported no error and `e2fsck -f -n`
-passed after unmount. This is useful coverage, not a production or power-loss
+passed after unmount.
+
+The ESP32-P4 demo subsequently created two real-card files with 920 one-block
+extents each. Both survived sync and remount with exact data, and their logical
+ranges covered blocks 0 through 919 without gaps or overlaps. Each tree used
+one intermediate index block and five leaf blocks containing 170, 170, 170,
+170, and 240 extents. All data and extent-tree metadata blocks were distinct,
+the filesystem remained clean, and `e2fsck -f -n` reported the depth histogram
+`12/1/2` without an integrity error.
+
+e2fsck does report that these two level-2 trees "could be narrower". The
+current half-split policy reaches depth 2 before those leaves are densely
+packed; 920 extents could instead fit in three 340-entry leaves at depth 1.
+This is a tree-density and lookup-performance limitation, not evidence of
+corruption. These results are useful coverage, not a production or power-loss
 qualification. See [CAVEATS.md](doc/CAVEATS.md) for the remaining limits.
 
 ## Add the component to a project
@@ -166,9 +182,11 @@ Configure the component with:
 idf.py menuconfig
 ```
 
-Open **lwext4 configuration**. The defaults select journaled ext3, disable
-xattrs and extents, allocate from internal SRAM through ESP-IDF's heap
-capability API, and use conservative aligned-access code.
+Open **lwext4 configuration**. The defaults select the journaled ext3 on-disk
+feature set, keep xattrs disabled, select the experimental extent
+implementation for projects that opt into ext4, allocate from internal SRAM
+through ESP-IDF's heap capability API, and use conservative aligned-access
+code.
 
 Build with:
 
@@ -176,7 +194,51 @@ Build with:
 idf.py build
 ```
 
-## Create an lwext4 block device from BDL
+## Create an lwext4 block device directly from SDMMC
+
+For an SD card, particularly on an ESP-IDF v6.0 release without the fix for
+[esp-idf#18875](https://github.com/espressif/esp-idf/issues/18875), prefer the
+direct adapter. It maps lwext4 physical block numbers one-to-one to SD sector
+numbers and calls `sdmmc_read_sectors()` and `sdmmc_write_sectors()` without
+forming a potentially overflowing byte address.
+
+Initialize the SDMMC host, slot, and `sdmmc_card_t` first, then create and
+register the adapter:
+
+```c
+#include "lwext4_port_sdmmc.h"
+
+lwext4_port_sdmmc_t *adapter = NULL;
+const lwext4_port_sdmmc_config_t sdmmc_config = {
+    .physical_block_size = card.csd.sector_size,
+    .buffer_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT,
+    .buffer_alignment = verified_dma_alignment,
+    .transfer_buffer_blocks = 16,
+};
+
+ESP_ERROR_CHECK(lwext4_port_sdmmc_create(&card, &sdmmc_config, &adapter));
+
+int rc = ext4_device_register(lwext4_port_sdmmc_get(adapter), "storage");
+if (rc != EOK) {
+    ESP_ERROR_CHECK(lwext4_port_sdmmc_destroy(adapter));
+    /* Deinitialize the caller-owned SDMMC card and host here. */
+}
+```
+
+The adapter borrows the initialized card and requires exclusive access to it.
+It owns only its recursive lock and aligned internal/DMA transfer buffer;
+lwext4 cache buffers may still reside in PSRAM because all SD transfers bounce
+through that buffer. Contiguous requests are split into chunks of at most
+`transfer_buffer_blocks` sectors.
+
+On shutdown, close all files, unregister VFS, stop the journal, unmount, and
+unregister the lwext4 device before destroying the adapter. Deinitialize the
+caller-owned SDMMC card/host last. `lwext4_port_sdmmc_sync()` is intentionally
+a no-op apart from serialization because ESP-IDF's SDMMC sector writes return
+synchronously; still call `ext4_cache_flush()` first to flush lwext4's own
+cache.
+
+## Create an lwext4 block device from generic BDL
 
 > [!WARNING]
 > ESP-IDF v6.0.2's SDMMC handle returned by `sdmmc_get_blockdev()` truncates
